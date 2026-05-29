@@ -56,9 +56,11 @@ def _print_report(name: str, scenario: Scenario, result: SimResult, events: bool
     print(f"  部署样式:{name}")
     print("=" * 64)
     total_cov = sum(s.coverage_area_km2() for s in scenario.spotters)
+    # 多站直接相加会重复计入重叠区,仅作粗略上界,故注明"含重叠"。
+    overlap_note = "(各站合计,含重叠)" if len(scenario.spotters) > 1 else ""
     print(
         f"探测站 {len(scenario.spotters)} | 发射平台 {len(scenario.pads)} | "
-        f"雷达覆盖合计 ≈ {total_cov:.1f} km²"
+        f"雷达覆盖{overlap_note} ≈ {total_cov:.1f} km²"
     )
     print(result.summary())
     print("-" * 64)

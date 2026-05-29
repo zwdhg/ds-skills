@@ -63,7 +63,8 @@ class TestProtocolConformance(unittest.TestCase):
 class _NullAssigner:
     """从不交战的分配器(测试注入用)。"""
 
-    def plan(self, assessments, tracks, pads, now, engaged_counts, skip_tracks=None):
+    def plan(self, assessments, tracks, pads, now, engaged_counts,
+             skip_tracks=None, ids=None):
         return [], []
 
 

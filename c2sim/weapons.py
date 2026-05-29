@@ -18,7 +18,7 @@ import enum
 from dataclasses import dataclass, field
 
 from c2sim.geometry import Vec3
-from c2sim.models import next_id
+from c2sim.models import IdGenerator, next_id
 
 
 class Phase(enum.Enum):
@@ -124,14 +124,16 @@ class LaunchPad:
         intercept_point: Vec3,
         intercept_time: float,
         now: float,
+        ids: IdGenerator | None = None,
     ) -> Thunder:
         """发射一架 Thunder 飞向预测拦截点,库存减一。"""
         if self.inventory <= 0:
             raise RuntimeError(f"发射平台 {self.pad_id} 已无在架 Thunder")
         self.inventory -= 1
         velocity = (intercept_point - self.position).unit() * self.thunder_max_speed
+        mint = ids.next if ids is not None else next_id
         return Thunder(
-            interceptor_id=next_id("THDR"),
+            interceptor_id=mint("THDR"),
             pad_id=self.pad_id,
             target_track_id=track_id,
             origin=self.position,

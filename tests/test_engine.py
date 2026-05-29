@@ -88,12 +88,11 @@ class TestEngine(unittest.TestCase):
         self.assertGreaterEqual(neutralized, 4)
         self.assertEqual(len(result.leaked), 0)
 
-    def test_rf_silent_loiter_hard_killed(self):
-        # RF 静默巡飞弹不可干扰,必须由 Thunder 硬杀伤。
-        scenario = build_point_defense_scenario(seed=2026)
-        result = Engine(scenario).run()
-        self.assertIn("T2-LOITER", result.destroyed)
-        self.assertNotIn("T2-LOITER", result.soft_killed)
+    def test_rf_silent_never_soft_killed(self):
+        # 不变量(对任意种子成立):RF 静默目标不可被干扰,绝不出现在软杀伤。
+        for seed in range(8):
+            result = Engine(build_point_defense_scenario(seed=seed)).run()
+            self.assertNotIn("T2-LOITER", result.soft_killed)
 
     def test_border_band_intercepts_all(self):
         scenario = build_border_band_scenario(seed=2026)

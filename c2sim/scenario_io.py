@@ -38,6 +38,17 @@ def _require(d: dict, key: str, where: str):
     return d[key]
 
 
+def _positive(value, where: str) -> float:
+    """要求为正数,否则报错(拦截负速度/负距离等无意义输入)。"""
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        raise ScenarioError(f"{where}: 期望数字,得到 {value!r}")
+    if not x > 0.0:
+        raise ScenarioError(f"{where}: 必须为正数,得到 {x}")
+    return x
+
+
 def _apply(cls, d: dict, where: str, *, positional: dict, optional: set):
     """构造 dataclass:positional 为 名→转换后值,optional 中的键若存在则透传。"""
     kwargs = dict(positional)
@@ -68,12 +79,14 @@ def _target(d: dict, i: int) -> Target:
         target_id=str(_require(d, "target_id", where)),
         position=_vec3(_require(d, "position", where), f"{where}.position"),
         aim=_vec3(_require(d, "aim", where), f"{where}.aim"),
-        cruise_speed=float(_require(d, "cruise_speed", where)),
+        cruise_speed=_positive(_require(d, "cruise_speed", where),
+                               f"{where}.cruise_speed"),
         kind=kind,
-        rcs=float(d.get("rcs", 0.1)),
+        rcs=_positive(d.get("rcs", 0.1), f"{where}.rcs"),
         terminal_speed=(None if d.get("terminal_speed") is None
-                        else float(d["terminal_speed"])),
-        terminal_range=float(d.get("terminal_range", 1500.0)),
+                        else _positive(d["terminal_speed"], f"{where}.terminal_speed")),
+        terminal_range=_positive(d.get("terminal_range", 1500.0),
+                                 f"{where}.terminal_range"),
         emits_rf=bool(d.get("emits_rf", True)),
     )
 

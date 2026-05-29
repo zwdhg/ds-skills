@@ -83,4 +83,5 @@ class WeaponTargetAssigner(Protocol):
         now: float,
         engaged_counts: dict[str, int],
         skip_tracks: set[str] | None = None,
+        ids: object | None = None,
     ) -> tuple[list[Command], list]: ...

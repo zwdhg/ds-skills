@@ -21,7 +21,7 @@ from c2sim.fusion import TrackFusion
 from c2sim.geometry import Vec3
 from c2sim.guidance import LeadPursuitGuidance
 from c2sim.interception import EngagementPolicy, GreedyAssigner
-from c2sim.models import Command, CommandKind, Target, next_id
+from c2sim.models import Command, CommandKind, IdGenerator, Target
 from c2sim.sensors import SpotterPro
 from c2sim.strategies import (
     GuidanceLaw,
@@ -144,6 +144,7 @@ class Engine:
         )
         self.guidance: GuidanceLaw = guidance or LeadPursuitGuidance()
 
+        self.ids = IdGenerator()  # 本引擎独立的 ID 生成器(避免全局可变状态)
         self.engaged_counts: dict[str, int] = {}
         self.jammed_tracks: dict[str, str] = {}  # track_id → 被干扰的真实目标 id
         self.now = 0.0
@@ -186,12 +187,15 @@ class Engine:
         tracks = self.tracker.update(reports, self.now)
         track_map = {t.track_id: t for t in tracks}
 
-        # 已消失的航迹释放其交战/干扰占用。
+        # 已消失的航迹释放其交战占用。
         for tid in list(self.engaged_counts):
             if tid not in track_map:
                 del self.engaged_counts[tid]
-        for tid in list(self.jammed_tracks):
-            if tid not in track_map:
+        # 回收干扰占用:航迹消失,或目标实际已脱离被干扰状态(干扰被放弃)
+        # —— 后者使该航迹可重新交由 Thunder 硬杀伤,避免永久滞留 skip 集。
+        for tid, target_id in list(self.jammed_tracks.items()):
+            victim = self.world.target_by_id(target_id)
+            if tid not in track_map or victim is None or not victim.jammed:
                 del self.jammed_tracks[tid]
 
         # 4) 威胁研判。
@@ -206,7 +210,7 @@ class Engine:
         # 7) 拦截指令生成与发射(跳过已交由软杀伤处置的航迹)。
         commands, new_thunders = self.assigner.plan(
             assessments, track_map, s.pads, self.now, self.engaged_counts,
-            skip_tracks=skip,
+            skip_tracks=skip, ids=self.ids,
         )
         for cmd in commands:
             self.result.commands.append(cmd)
@@ -292,7 +296,7 @@ class Engine:
             self.jammed_tracks[a.track_id] = victim.target_id
             skip.add(a.track_id)
             self.result.commands.append(Command(
-                command_id=next_id("CMD"),
+                command_id=self.ids.next("CMD"),
                 kind=CommandKind.JAM,
                 timestamp=self.now,
                 track_id=a.track_id,

@@ -66,6 +66,18 @@ class TestValidation(unittest.TestCase):
         with self.assertRaises(ScenarioError):
             from_dict(d)
 
+    def test_negative_cruise_speed_rejected(self):
+        d = _minimal()
+        d["targets"][0]["cruise_speed"] = -5.0
+        with self.assertRaises(ScenarioError):
+            from_dict(d)
+
+    def test_nonpositive_rcs_rejected(self):
+        d = _minimal()
+        d["targets"][0]["rcs"] = 0.0
+        with self.assertRaises(ScenarioError):
+            from_dict(d)
+
 
 if __name__ == "__main__":
     unittest.main()

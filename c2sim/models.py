@@ -193,9 +193,25 @@ class Command:
     note: str = ""
 
 
-_counter = itertools.count(1)
+class IdGenerator:
+    """带前缀的单调递增 ID 生成器。
+
+    每个引擎应持有独立实例,避免跨引擎/跨蒙特卡洛运行共享全局计数器——
+    使 ID 可按次复现、无界增长受控。
+    """
+
+    def __init__(self) -> None:
+        self._counter = itertools.count(1)
+
+    def next(self, prefix: str) -> str:
+        return f"{prefix}-{next(self._counter):04d}"
+
+
+# 模块级默认生成器,仅为向后兼容(直接调用 next_id 的旧路径/测试);
+# 引擎运行路径应注入独立的 :class:`IdGenerator`。
+_default_ids = IdGenerator()
 
 
 def next_id(prefix: str) -> str:
-    """生成带前缀的单调递增标识,便于日志阅读。"""
-    return f"{prefix}-{next(_counter):04d}"
+    """用模块级默认生成器生成 ID(向后兼容入口)。"""
+    return _default_ids.next(prefix)

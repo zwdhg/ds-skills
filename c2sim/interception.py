@@ -17,6 +17,7 @@ from c2sim.geometry import Vec3, lead_intercept_time
 from c2sim.models import (
     Command,
     CommandKind,
+    IdGenerator,
     ThreatAssessment,
     ThreatLevel,
     Track,
@@ -86,6 +87,7 @@ def plan_and_fire(
     now: float,
     engaged_counts: dict[str, int],
     skip_tracks: set[str] | None = None,
+    ids: IdGenerator | None = None,
 ) -> tuple[list[Command], list[Thunder]]:
     """生成拦截指令并实施发射(Thunder 硬杀伤)。
 
@@ -97,6 +99,7 @@ def plan_and_fire(
         now: 当前仿真时间。
         engaged_counts: 各航迹已承诺的 Thunder 架数(跨帧累计),原地更新。
         skip_tracks: 已由软杀伤(干扰)处置、不再用 Thunder 交战的航迹集合。
+        ids: ID 生成器(引擎注入以保证按次复现);None 时用模块默认。
 
     返回:
         ``(commands, thunders)`` —— 本帧下发的指令与新发射的 Thunder。
@@ -104,6 +107,7 @@ def plan_and_fire(
     commands: list[Command] = []
     thunders: list[Thunder] = []
     skip = skip_tracks or set()
+    mint = ids.next if ids is not None else next_id
 
     for assessment in assessments:
         if assessment.level < policy.engage_level:
@@ -125,7 +129,7 @@ def plan_and_fire(
             if sol is None:
                 commands.append(
                     Command(
-                        command_id=next_id("CMD"),
+                        command_id=mint("CMD"),
                         kind=CommandKind.HOLD,
                         timestamp=now,
                         track_id=track.track_id,
@@ -139,7 +143,7 @@ def plan_and_fire(
 
             intercept_time = now + sol.flight_time
             thunder = sol.pad.fire(
-                track.track_id, sol.intercept_point, intercept_time, now
+                track.track_id, sol.intercept_point, intercept_time, now, ids=ids
             )
             thunders.append(thunder)
             engaged_counts[track.track_id] = (
@@ -147,7 +151,7 @@ def plan_and_fire(
             )
             commands.append(
                 Command(
-                    command_id=next_id("CMD"),
+                    command_id=mint("CMD"),
                     kind=CommandKind.ENGAGE,
                     timestamp=now,
                     track_id=track.track_id,
@@ -181,8 +185,9 @@ class GreedyAssigner:
         now: float,
         engaged_counts: dict[str, int],
         skip_tracks: set[str] | None = None,
+        ids: IdGenerator | None = None,
     ) -> tuple[list[Command], list[Thunder]]:
         return plan_and_fire(
             assessments, tracks, pads, self.policy, now, engaged_counts,
-            skip_tracks=skip_tracks,
+            skip_tracks=skip_tracks, ids=ids,
         )
