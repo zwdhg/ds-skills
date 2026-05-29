@@ -26,8 +26,19 @@ class TestIdGenerator(unittest.TestCase):
         r2 = Engine(build_point_defense_scenario(seed=7)).run()
         ids1 = [c.command_id for c in r1.commands]
         ids2 = [c.command_id for c in r2.commands]
-        self.assertEqual(ids1, ids2)
-        self.assertTrue(ids1 and ids1[0].endswith("-0001"))
+        self.assertEqual(ids1, ids2)   # 按次完全复现(含 CMD/THDR/TRK 同源计数)
+        self.assertTrue(ids1)
+
+    def test_track_ids_reproducible_across_runs(self):
+        # 回归:航迹 ID(TRK)也须经引擎注入的 IdGenerator 生成,跨次按种子复现,
+        # 不再受全局计数器漂移(此前 TrackFusion 漏用全局 next_id)。
+        def trk_ids(seed):
+            eng = Engine(build_point_defense_scenario(seed=seed))
+            for _ in range(30):
+                eng.step()
+            return sorted(eng.tracker.tracks)
+        self.assertEqual(trk_ids(7), trk_ids(7))
+        self.assertTrue(all(t.startswith("TRK-") for t in trk_ids(7)))
 
 
 class TestJammingLedgerInvariant(unittest.TestCase):

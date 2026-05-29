@@ -98,8 +98,9 @@ def _spotter(d: dict, i: int) -> SpotterPro:
     opt = {"azimuth_center_deg", "azimuth_width_deg", "rf_range", "rf_detect_prob",
            "radar_ref_range", "radar_ref_rcs", "radar_range_exp", "coverage_radius",
            "radar_blind_zone", "radar_elevation_max_deg", "radar_sigma_range",
-           "radar_tas_capacity", "radar_detect_prob", "eo_range", "eo_capacity",
-           "eo_sigma_range", "eo_sigma_ang", "eo_classify_prob"}
+           "radar_sigma_az", "radar_sigma_el", "radar_tas_capacity",
+           "radar_detect_prob", "eo_range", "eo_capacity", "eo_sigma_range",
+           "eo_sigma_ang", "eo_classify_prob", "clutter_rate", "clutter_sigma"}
     extra = {k: v for k, v in d.items()
              if k not in ("station_id", "position")}
     bad = set(extra) - opt
@@ -114,7 +115,7 @@ def _pad(d: dict, i: int) -> LaunchPad:
     pos = _vec3(_require(d, "position", where), f"{where}.position")
     opt = {"inventory", "operating_radius", "thunder_max_speed", "lethal_radius",
            "acquisition_range", "acquisition_prob", "seeker_sigma",
-           "terminal_range_margin"}
+           "max_turn_rate", "lock_loss_prob"}
     extra = {k: v for k, v in d.items() if k not in ("pad_id", "position")}
     bad = set(extra) - opt
     if bad:
@@ -211,7 +212,10 @@ def to_dict(scenario: Scenario) -> dict:
         "pads": [
             {"pad_id": p.pad_id, "position": v(p.position),
              "inventory": p.inventory, "operating_radius": p.operating_radius,
-             "thunder_max_speed": p.thunder_max_speed}
+             "thunder_max_speed": p.thunder_max_speed, "lethal_radius": p.lethal_radius,
+             "acquisition_range": p.acquisition_range,
+             "acquisition_prob": p.acquisition_prob, "seeker_sigma": p.seeker_sigma,
+             "max_turn_rate": p.max_turn_rate, "lock_loss_prob": p.lock_loss_prob}
             for p in scenario.pads
         ],
         "jammers": [
@@ -222,7 +226,8 @@ def to_dict(scenario: Scenario) -> dict:
         "targets": [
             {"target_id": t.target_id, "position": v(t.position), "aim": v(t.aim),
              "cruise_speed": t.cruise_speed, "kind": t.kind.value, "rcs": t.rcs,
-             "terminal_speed": t.terminal_speed, "emits_rf": t.emits_rf}
+             "terminal_speed": t.terminal_speed, "terminal_range": t.terminal_range,
+             "emits_rf": t.emits_rf}
             for t in scenario.targets
         ],
     }

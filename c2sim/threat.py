@@ -50,9 +50,10 @@ def classify_track(track: Track) -> TargetKind:
         return TargetKind.LOITERING_MUNITION
     if speed >= 30.0:
         return TargetKind.FIXED_WING_UAV
-    if speed >= 8.0:
-        return TargetKind.ROTARY_UAV
-    return TargetKind.MICRO_UAV
+    # 低速或**速度尚未估计**(新航迹 velocity≈0)→ 保守按旋翼无人机(中低杀伤),
+    # 不落入最低杀伤性的 MICRO,避免新生航迹首帧威胁分被人为压低;
+    # 微型与旋翼凭运动学无法区分,留待光电识别(track.classification)。
+    return TargetKind.ROTARY_UAV
 
 
 def assess_track(

@@ -37,10 +37,15 @@ class TestClassification(unittest.TestCase):
             TargetKind.ROTARY_UAV,
         )
 
-    def test_kinematic_micro_slow(self):
+    def test_slow_or_unestimated_defaults_to_rotary(self):
+        # 低速/速度未估计(含新生航迹 velocity≈0)→ 保守按旋翼,不落最低杀伤 MICRO。
         self.assertEqual(
             classify_track(_track(Vec3(0, 0, 100), Vec3(4, 0, 0))),
-            TargetKind.MICRO_UAV,
+            TargetKind.ROTARY_UAV,
+        )
+        self.assertEqual(
+            classify_track(_track(Vec3(0, 0, 100), Vec3())),  # 零速新航迹
+            TargetKind.ROTARY_UAV,
         )
 
 

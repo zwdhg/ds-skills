@@ -50,6 +50,27 @@ class TestBatchMoe(unittest.TestCase):
         with self.assertRaises(ValueError):
             BatchMoe.aggregate([])
 
+    def test_cost_per_kill_infinite_when_no_hard_kills(self):
+        # 回归:全程零硬杀伤时效费比应为 inf(未定义),不得被 0.0 哨兵误报为完美。
+        runs = [Moe.from_result(_result(2, 0, 2, 0, 0, 4, 100.0)) for _ in range(3)]
+        b = BatchMoe.aggregate(runs)
+        self.assertTrue(math.isinf(b.cost_per_kill.mean))
+        self.assertIn("N/A", b.table())
+
+    def test_ci_uses_sample_stdev(self):
+        # 回归:均值 CI 基于样本标准差(/n-1),而非总体标准差(/n)。
+        import statistics
+        runs = [
+            Moe.from_result(_result(4, 4, 0, 0, 0, 8, 100.0)),
+            Moe.from_result(_result(4, 3, 0, 1, 0, 7, 100.0)),
+            Moe.from_result(_result(4, 2, 0, 2, 0, 9, 100.0)),
+        ]
+        b = BatchMoe.aggregate(runs)
+        xs = [r.leakage_rate for r in [Moe.from_result(_result(4, 4, 0, 0, 0, 8, 100.0)),
+              Moe.from_result(_result(4, 3, 0, 1, 0, 7, 100.0)),
+              Moe.from_result(_result(4, 2, 0, 2, 0, 9, 100.0))]]
+        self.assertAlmostEqual(b.leakage_rate.stdev, statistics.stdev(xs), places=9)
+
 
 class TestRunBatch(unittest.TestCase):
     def test_run_batch_over_seeds(self):

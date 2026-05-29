@@ -132,9 +132,10 @@ class Engine:
             single_shot_pk=scenario.single_shot_pk,
             rng=self.rng,
         )
+        self.ids = IdGenerator()  # 本引擎独立的 ID 生成器(避免全局可变状态)
         # 可替换策略(依赖倒置):默认即现有实现,可在组装处注入其它算法。
         self.tracker: Tracker = tracker or TrackFusion(
-            gate_distance=600.0, max_coast=6.0
+            gate_distance=600.0, max_coast=6.0, ids=self.ids
         )
         self.threat_model: ThreatModel = threat_model or WeightedThreatModel(
             scenario.threat_policy
@@ -144,7 +145,6 @@ class Engine:
         )
         self.guidance: GuidanceLaw = guidance or LeadPursuitGuidance()
 
-        self.ids = IdGenerator()  # 本引擎独立的 ID 生成器(避免全局可变状态)
         self.engaged_counts: dict[str, int] = {}
         self.jammed_tracks: dict[str, str] = {}  # track_id → 被干扰的真实目标 id
         self.now = 0.0
@@ -169,12 +169,13 @@ class Engine:
         dt = s.dt
         self.now += dt
 
-        # 1) 末段制导(零延迟,先于积分;消耗导引头随机数)。
+        # 1) 末段制导(以步初真值解算瞄准,消耗导引头随机数)。
         self._guide_terminal()
 
-        # 2) World 物理:推进真值与弹道,结算引信/软杀伤/突防。
-        self.world.advance_targets(dt)
+        # 2) World 物理:先以**统一的步初参考系**推进弹道并近炸判定(拦截弹与
+        #    目标都从步初位置在 [0,dt] 内运动),再推进目标真值,最后结算。
         self._apply(self.world.integrate_thunders(dt))
+        self.world.advance_targets(dt)
         self._apply(self.world.resolve_jamming(dt))
         self._apply(self.world.resolve_detonations())
         self._apply(self.world.check_leaks())
@@ -316,7 +317,7 @@ class Engine:
             victim = self.world.nearest_jammable(trk.position, jammer)
             if victim is None:
                 continue
-            victim.jammed = True
+            self.world.apply_jamming(victim)
             self.jammed_tracks[a.track_id] = victim.target_id
             skip.add(a.track_id)
             self.result.commands.append(Command(

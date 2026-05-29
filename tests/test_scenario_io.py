@@ -78,6 +78,30 @@ class TestValidation(unittest.TestCase):
         with self.assertRaises(ScenarioError):
             from_dict(d)
 
+    def test_terminal_range_roundtrip_preserved(self):
+        # 回归:terminal_range 必须经 save->load 保留,而非静默回默认 1500。
+        s = build_point_defense_scenario()
+        s.targets[0].terminal_range = 900.0
+        rt = from_dict(to_dict(s))
+        self.assertEqual(rt.targets[0].terminal_range, 900.0)
+
+    def test_clutter_field_loadable(self):
+        d = _minimal()
+        d["spotters"][0]["clutter_rate"] = 2.0
+        s = from_dict(d)
+        self.assertEqual(s.spotters[0].clutter_rate, 2.0)
+
+    def test_pad_extra_fields(self):
+        d = _minimal()
+        d["pads"][0]["max_turn_rate"] = 3.0  # 真实 LaunchPad 字段,应被接受
+        s = from_dict(d)
+        self.assertEqual(s.pads[0].max_turn_rate, 3.0)
+        # 非 LaunchPad 字段(Thunder 的 terminal_range_margin)须报清晰 ScenarioError。
+        d2 = _minimal()
+        d2["pads"][0]["terminal_range_margin"] = 2.0
+        with self.assertRaises(ScenarioError):
+            from_dict(d2)
+
 
 if __name__ == "__main__":
     unittest.main()

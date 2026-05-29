@@ -65,9 +65,13 @@ class _Stat:
     @classmethod
     def of(cls, xs: list[float]) -> "_Stat":
         n = len(xs)
-        mean = statistics.fmean(xs) if xs else 0.0
-        sd = statistics.pstdev(xs) if n > 1 else 0.0
-        half = 1.96 * sd / math.sqrt(n) if n > 0 else 0.0
+        if n == 0:
+            return cls(mean=0.0, stdev=0.0, ci95=(0.0, 0.0))
+        mean = statistics.fmean(xs)
+        # 样本标准差(/n-1)作为离散度与均值标准误(SEM)的基准;n=1 退化为 0。
+        # CI 为正态近似(n 较小时偏窄,详见 docs/model-card.md)。
+        sd = statistics.stdev(xs) if n > 1 else 0.0
+        half = 1.96 * sd / math.sqrt(n)
         return cls(mean=mean, stdev=sd, ci95=(mean - half, mean + half))
 
 
@@ -87,12 +91,17 @@ class BatchMoe:
     def aggregate(cls, runs: list[Moe]) -> "BatchMoe":
         if not runs:
             raise ValueError("无样本可聚合")
+        # 仅统计有硬杀伤的样本;若全程无硬杀伤,效费比为未定义(inf),
+        # 不可用 0.0 哨兵(否则"零硬杀伤"会被误报为"完美效费比")。
         finite_cpk = [r.cost_per_kill for r in runs if math.isfinite(r.cost_per_kill)]
+        inf = float("inf")
+        cpk = (_Stat.of(finite_cpk) if finite_cpk
+               else _Stat(mean=inf, stdev=0.0, ci95=(inf, inf)))
         return cls(
             n_runs=len(runs),
             leakage_rate=_Stat.of([r.leakage_rate for r in runs]),
             neutralization_rate=_Stat.of([r.neutralization_rate for r in runs]),
-            cost_per_kill=_Stat.of(finite_cpk or [0.0]),
+            cost_per_kill=cpk,
             thunders=_Stat.of([float(r.thunders) for r in runs]),
             duration=_Stat.of([r.duration for r in runs]),
             prob_zero_leak=sum(1 for r in runs if r.leaked == 0) / len(runs),
@@ -103,13 +112,14 @@ class BatchMoe:
             return (f"{s.mean*100:5.1f}% ±{s.stdev*100:4.1f} "
                     f"[{s.ci95[0]*100:.1f}, {s.ci95[1]*100:.1f}]")
 
+        cpk = (f"{self.cost_per_kill.mean:5.2f} 架/杀 ±{self.cost_per_kill.stdev:.2f}"
+               if math.isfinite(self.cost_per_kill.mean) else "N/A(无硬杀伤)")
         return "\n".join([
             f"蒙特卡洛 {self.n_runs} 次:",
             f"  突防率          {pct(self.leakage_rate)}",
             f"  处置率          {pct(self.neutralization_rate)}",
             f"  零突防概率      {self.prob_zero_leak*100:5.1f}%",
-            f"  硬杀伤效费比    {self.cost_per_kill.mean:5.2f} 架/杀 "
-            f"±{self.cost_per_kill.stdev:.2f}",
+            f"  硬杀伤效费比    {cpk}",
             f"  Thunder 消耗    {self.thunders.mean:5.2f} 架 "
             f"±{self.thunders.stdev:.2f}",
             f"  用时            {self.duration.mean:5.1f}s "

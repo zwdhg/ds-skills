@@ -114,12 +114,6 @@ class LaunchPad:
     max_turn_rate: float = 2.0         # 最大转弯率(弧度/秒),≈8g@67m/s
     lock_loss_prob: float = 0.0        # 末段每帧丢锁概率(默认 0;研究可调)
 
-    def can_reach(self, point: Vec3) -> bool:
-        """预测拦截点是否在作业半径内且尚有在架 Thunder。"""
-        if self.inventory <= 0:
-            return False
-        return self.position.distance_to(point) <= self.operating_radius
-
     def fire(
         self,
         track_id: str,

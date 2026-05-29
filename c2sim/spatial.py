@@ -19,12 +19,20 @@ class SpatialGrid:
     def __init__(self, cell: float = 1000.0) -> None:
         self.cell = cell
         self._cells: dict[tuple[int, int], list[tuple[Vec3, object]]] = {}
+        # 占用格的包围盒(min_gx, min_gy, max_gx, max_gy),用于最近邻搜索定界。
+        self._bbox: tuple[int, int, int, int] | None = None
 
     def _key(self, x: float, y: float) -> tuple[int, int]:
         return (int(x // self.cell), int(y // self.cell))
 
     def insert(self, pos: Vec3, payload: object) -> None:
-        self._cells.setdefault(self._key(pos.x, pos.y), []).append((pos, payload))
+        gx, gy = self._key(pos.x, pos.y)
+        self._cells.setdefault((gx, gy), []).append((pos, payload))
+        if self._bbox is None:
+            self._bbox = (gx, gy, gx, gy)
+        else:
+            x0, y0, x1, y1 = self._bbox
+            self._bbox = (min(x0, gx), min(y0, gy), max(x1, gx), max(y1, gy))
 
     def query_radius(self, center: Vec3, radius: float) -> list[object]:
         """返回与 ``center`` 三维距离 ≤ ``radius`` 的全部载荷(精确)。"""
@@ -39,35 +47,31 @@ class SpatialGrid:
         return out
 
     def nearest(self, center: Vec3) -> object | None:
-        """返回距 ``center`` 最近的载荷(精确);空索引返回 None。
+        """返回距 ``center`` 最近的载荷(精确,与暴力遍历一致);空索引返回 None。
 
-        从一个网格半径起按倍增扩张半径,直至命中;由于半径查询精确,首个
-        非空半径内的最小三维距离即全局最近邻。
+        按倍增扩张水平搜索 span;一旦当前最优在**保证已覆盖半径**
+        ``(span-1)·cell`` 内即可确认为全局最近;``max_span`` 由占用格包围盒相对
+        查询点算出(O(1)),确保查询点落在占用区**之外**时也能扩到覆盖全部占用
+        格,杜绝漏检/返回 None。
         """
-        if not self._cells:
+        if self._bbox is None:
             return None
-        radius = self.cell
-        # 索引非空,扩张上界以保证终止(覆盖整个已用范围)。
-        max_radius = self.cell * (self._extent() + 2)
-        while radius <= max_radius:
+        cx, cy = self._key(center.x, center.y)
+        x0, y0, x1, y1 = self._bbox
+        # 覆盖全部占用格所需的最大 span。
+        max_span = max(abs(cx - x0), abs(cx - x1), abs(cy - y0), abs(cy - y1)) + 1
+        span = 1
+        while True:
+            span = min(span, max_span)
             best, best_d = None, float("inf")
-            span = int(radius // self.cell) + 1
-            cx, cy = self._key(center.x, center.y)
             for gx in range(cx - span, cx + span + 1):
                 for gy in range(cy - span, cy + span + 1):
                     for pos, payload in self._cells.get((gx, gy), ()):
                         d = center.distance_to(pos)
                         if d < best_d:
                             best, best_d = payload, d
-            # 已检候选覆盖到 span*cell 的水平范围;若最近者在更内圈则可信。
             if best is not None and best_d <= (span - 1) * self.cell:
                 return best
-            if best is not None and radius >= max_radius:
-                return best
-            radius *= 2.0
-        return best
-
-    def _extent(self) -> int:
-        xs = [k[0] for k in self._cells]
-        ys = [k[1] for k in self._cells]
-        return max(max(xs) - min(xs), max(ys) - min(ys)) if xs else 0
+            if span >= max_span:
+                return best  # 已检视全部占用格,best 即全局最近
+            span *= 2

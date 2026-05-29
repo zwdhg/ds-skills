@@ -91,6 +91,7 @@ class TrackFusion:
         gate_distance: 量测-航迹关联波门(米)。
         alpha, beta: α-β 滤波增益,分别作用于位置与速度修正。
         max_coast: 惯性外推容忍时长(秒),超过则撤销航迹。
+        ids: 航迹 ID 生成器(引擎注入以保证按次复现);None 时用模块默认。
     """
 
     def __init__(
@@ -99,11 +100,13 @@ class TrackFusion:
         alpha: float = 0.6,
         beta: float = 0.2,
         max_coast: float = 8.0,
+        ids=None,
     ) -> None:
         self.gate_distance = gate_distance
         self.alpha = alpha
         self.beta = beta
         self.max_coast = max_coast
+        self._mint = ids.next if ids is not None else next_id
         self.tracks: dict[str, Track] = {}
 
     def update(self, reports: list[SensorReport], now: float) -> list[Track]:
@@ -171,7 +174,7 @@ class TrackFusion:
 
     def _spawn_track(self, m: _FusedMeasurement, now: float) -> None:
         """由一个无主量测起始新航迹(初始速度未知,置零)。"""
-        tid = next_id("TRK")
+        tid = self._mint("TRK")
         self.tracks[tid] = Track(
             track_id=tid,
             position=m.position,

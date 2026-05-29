@@ -60,24 +60,6 @@ class SelfDestruct:
     track_id: str
 
 
-def select_seeker_lock(
-    basket: list[Target], cue: Vec3 | None, fallback: Vec3
-) -> Target | None:
-    """从导引头视场(basket)内选定锁定目标。
-
-    * 有指控上行线索 ``cue``(所分配航迹的估计位置)时,锁定 basket 内**最接近
-      线索**的真实目标——即"被引导去打的那个";
-    * 线索丢失时,退化为自主锁定**最接近弹体**(``fallback``)的目标。
-
-    误关联是这一规则在密集/诱饵态势下的**自然涌现**:当邻近目标比预定目标更
-    接近线索时,导引头会锁错——无需人为概率。
-    """
-    if not basket:
-        return None
-    key_point = cue if cue is not None else fallback
-    return min(basket, key=lambda t: key_point.distance_to(t.position))
-
-
 def seeker_lock(basket, cue, fallback, rng, gate: float):
     """按信杂比加权概率锁定 basket 内的真实目标(导引头视场内的回波竞争)。
 
@@ -232,22 +214,6 @@ class World:
     def target_by_id(self, tid: str | None) -> Target | None:
         return self._by_id.get(tid) if tid is not None else None
 
-    def nearest_alive_target(self, point: Vec3) -> Target | None:
-        """距 ``point`` 最近的存活目标。
-
-        有空间索引时走网格(与暴力遍历结果一致),否则回退暴力遍历。
-        """
-        if self._grid is not None:
-            return self._grid.nearest(point)
-        best, best_d = None, float("inf")
-        for tgt in self.targets:
-            if not tgt.alive:
-                continue
-            d = point.distance_to(tgt.position)
-            if d < best_d:
-                best, best_d = tgt, d
-        return best
-
     def targets_within(self, point: Vec3, radius: float) -> list[Target]:
         """弹载导引头视场:距 ``point`` ≤ ``radius`` 的存活目标(走空间索引)。"""
         if self._grid is not None:
@@ -255,10 +221,19 @@ class World:
         return [t for t in self.targets
                 if t.alive and point.distance_to(t.position) <= radius]
 
+    def apply_jamming(self, target: Target) -> None:
+        """对目标施加干扰(进入被干扰/悬停状态)。
+
+        作为 World 的真值变更入口,避免控制器直接写 World 内部状态。
+        """
+        target.jammed = True
+
     def nearest_jammable(self, point: Vec3, jammer: HunterMax) -> Target | None:
-        """干扰圈内、依赖 RF 链路的最近真实目标。"""
+        """干扰圈内、依赖 RF 链路、距 ``point`` 最近的真实目标(走空间索引)。"""
+        candidates = self.targets_within(jammer.position, jammer.jam_range) \
+            if self._grid is not None else self.targets
         best, best_d = None, float("inf")
-        for t in self.targets:
+        for t in candidates:
             if not t.alive or not t.emits_rf or not jammer.covers(t.position):
                 continue
             d = point.distance_to(t.position)
