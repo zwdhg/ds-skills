@@ -177,6 +177,7 @@ class Engine:
         self._apply(self.world.resolve_jamming(dt))
         self._apply(self.world.resolve_detonations())
         self._apply(self.world.check_leaks())
+        self.world.reindex()  # 重建就近查询索引(供制导/干扰决策)
 
         # 3) Spotter Pro 多模态探测 → 航迹融合。
         reports = []

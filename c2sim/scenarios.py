@@ -183,5 +183,53 @@ def build_border_band_scenario(seed: int = 2026) -> Scenario:
     )
 
 
+def build_swarm_scenario(seed: int = 2026, n: int = 40) -> Scenario:
+    """蜂群突击:``n`` 架无人机自四面八方来袭,考验体系规模与饱和应对。
+
+    目标布局确定(随种子只变传感/毁伤噪声,便于蒙特卡洛)。防御兵力可观但
+    可被饱和——雷达 TAS 容量(每站 6)与 Thunder 库存共同构成饱和瓶颈,故
+    通常无法零突防,正是蜂群对抗要研究的问题。也用于规模/性能验证。
+    """
+    asset = Vec3(0.0, 0.0, 0.0)
+
+    # 多站 360° 探测以提升聚合 TAS 容量(每站 TAS≥6)。
+    spotters = [
+        SpotterPro("SPT-C", Vec3(0.0, 0.0, 20.0), azimuth_width_deg=360.0),
+        SpotterPro("SPT-N", Vec3(0.0, 4_000.0, 20.0), azimuth_width_deg=360.0),
+        SpotterPro("SPT-S", Vec3(0.0, -4_000.0, 20.0), azimuth_width_deg=360.0),
+    ]
+    # 8 个发射平台环形前置,合计库存匹配蜂群规模。
+    pads = [
+        LaunchPad(f"PAD-{a:03d}", _polar(0, 0, a, 3_000, 15), inventory=6)
+        for a in range(0, 360, 45)
+    ]
+    # 4 部 Hunter Max 覆盖各象限,对 RF 制式目标软杀伤减压。
+    jammers = [
+        HunterMax(f"HM-{a:03d}", _polar(0, 0, a, 3_500, 15), jam_range=4_500.0)
+        for a in range(45, 360, 90)
+    ]
+
+    targets = []
+    for i in range(n):
+        az = (i * 360.0 / n)
+        rng_m = 8_000.0 + (i % 5) * 600.0
+        kind = (TargetKind.LOITERING_MUNITION if i % 4 == 0
+                else TargetKind.FIXED_WING_UAV)
+        targets.append(_inbound(
+            tid=f"SW{i:02d}",
+            aim=asset,
+            start=_polar(0, 0, az, rng_m, 200.0 + (i % 4) * 150.0),
+            cruise=42.0 + (i % 7) * 2.0,
+            kind=kind,
+            rcs=0.10 + (i % 3) * 0.05,
+            emits_rf=(i % 4 != 0),  # 巡飞弹(每 4 个)RF 静默
+        ))
+
+    return Scenario(
+        asset=asset, targets=targets, spotters=spotters, pads=pads,
+        jammers=jammers, seed=seed, max_time=400.0,
+    )
+
+
 # 默认演示想定。
 build_demo_scenario = build_point_defense_scenario

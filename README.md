@@ -35,19 +35,21 @@ Spotter Pro 多模态探测 ─► 航迹融合 ─► 威胁研判 ─► 拦�
 # 核心要域点状防护(360° 安全穹顶)
 python -m c2sim.cli
 
-# 边境线带状防护(多站 180° 扇区)
+# 边境线带状防护(多站 180° 扇区)/ 蜂群突击(规模·饱和)
 python -m c2sim.cli --scenario border
+python -m c2sim.cli --scenario swarm
 
-# 打印逐条事件时间线
+# 打印事件时间线 / 生成态势 SVG 图(无第三方依赖)
 python -m c2sim.cli --events
-
-# 生成态势 SVG 图(无第三方依赖)
 python -m c2sim.cli --plot situation.svg
 
-# 指定随机种子复现
-python -m c2sim.cli --seed 7
+# 蒙特卡洛 50 次,打印效能度量(突防率/处置率/效费比 + 置信区间)
+python -m c2sim.cli --monte-carlo 50
 
-# 运行测试(58 项)
+# 从 JSON 想定文件运行(想定即数据)
+python -m c2sim.cli --scenario-file docs/examples/scenario.json
+
+# 运行测试(88 项)
 python -m unittest discover -s tests
 ```
 
@@ -116,6 +118,35 @@ render_svg(engine, "situation.svg", title="态势图")
 | --- | --- | --- |
 | 核心要域点状防护 | 中心单站 360° + Thunder 四象限前置 | 半径 5km 安全穹顶,≈78.5 km² |
 | 边境线带状防护 | 多站 180° 扇区沿线 + 平台后置 | 单组 ≈39.27 km² |
+| 蜂群突击 | 40 架四面来袭 + 多站/8 平台/4 干扰 | 演示规模与**饱和**(TAS 容量/库存瓶颈) |
+
+## 分析平台能力
+
+- **蒙特卡洛 + 效能度量**(`metrics.py`):跨种子批量运行,输出突防率、
+  处置率、零突防概率、**硬杀伤效费比**、Thunder 消耗等 MOE 的均值/标准差/
+  95% 置信区间。`python -m c2sim.cli --monte-carlo N`。
+- **想定即数据**(`scenario_io.py`):以 JSON 声明/版本化想定,带显式校验;
+  `--scenario-file PATH` 运行。示例 `docs/examples/scenario.json`。
+- **保真度与边界**:见 [`docs/model-card.md`](docs/model-card.md)——声明各环节
+  保真度、会系统性影响结论的简化(真值兜底、标量 σ、无遮挡/时延等)及默认
+  参数。已建模:Thunder **转弯率约束**、可配置**虚警/杂波**。
+- **规模**:`spatial.py` 均匀网格索引(与暴力遍历结果一致),热路径就近查询
+  约 19× 加速(`python scripts/benchmark_spatial.py`),支撑蜂群规模。
+
+## 可扩展架构(SOLID)
+
+算法均经 `strategies.py` 协议**依赖注入**,新增实现无需改引擎(OCP/DIP):
+
+| 接缝 | 协议 | 默认实现 |
+| --- | --- | --- |
+| 传感 | `SensorModel` | `SpotterPro` |
+| 跟踪 | `Tracker` | `TrackFusion` |
+| 研判 | `ThreatModel` | `WeightedThreatModel` |
+| 制导 | `GuidanceLaw` | `LeadPursuitGuidance` / `PurePursuitGuidance` |
+| 火力分配 | `WeaponTargetAssigner` | `GreedyAssigner` |
+
+引擎按"被控对象 / 控制器 / 记录"三分:真值物理在 `world.World`,指控编排在
+`engine.Engine`,记录在 `engine.Trace`(可视化只依赖此窄视图)。
 
 ## 自定义想定
 
@@ -153,11 +184,21 @@ c2sim/
   threat.py        威胁研判
   interception.py  拦截指令生成(火力-目标分配,软/硬杀伤决策)
   weapons.py       Thunder 截击机、发射平台、Hunter Max 干扰设备
-  engine.py        Skyshield Nexus 仿真引擎
+  world.py         被控对象:真值与物理(运动学/引信/软杀伤/突防)
+  engine.py        Skyshield Nexus 控制器 + 编排(Engine / Trace)
+  strategies.py    可替换算法协议(依赖倒置接缝)
+  guidance.py      制导律实现(领先追踪 / 纯追踪)
+  spatial.py       均匀网格空间索引(规模加速)
+  metrics.py       效能度量(MOE)与蒙特卡洛聚合
+  scenario_io.py   想定 JSON 读写与校验
   viz.py           态势 SVG 可视化(无依赖)
-  scenarios.py     点状/带状两种部署想定
+  scenarios.py     点状/带状/蜂群部署想定
   cli.py           命令行入口
 docs/
   reference-system.md  参考系统规格摘要
-tests/             unittest 测试(58 项)
+  model-card.md        保真度与有效边界
+  examples/            示例态势图与 JSON 想定
+scripts/
+  benchmark_spatial.py 空间索引加速基准
+tests/             unittest 测试(88 项)
 ```

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from c2sim.geometry import Vec3, segment_cpa, turn_towards
 from c2sim.models import Target
+from c2sim.spatial import SpatialGrid
 from c2sim.weapons import HunterMax, Thunder
 
 
@@ -78,6 +79,8 @@ class World:
         self.single_shot_pk = single_shot_pk
         self.rng = rng
         self.thunders: list[Thunder] = []
+        self._by_id = {t.target_id: t for t in targets}  # O(1) 身份查找
+        self._grid: SpatialGrid | None = None             # 就近查询加速(每步重建)
 
     # -- 推进 -------------------------------------------------------------
 
@@ -171,15 +174,24 @@ class World:
 
     # -- 查询 / 注入 ------------------------------------------------------
 
-    def target_by_id(self, tid: str | None) -> Target | None:
-        if tid is None:
-            return None
+    def reindex(self) -> None:
+        """重建存活目标的空间索引(每步物理结算后调用)。"""
+        grid = SpatialGrid(cell=1000.0)
         for t in self.targets:
-            if t.target_id == tid:
-                return t
-        return None
+            if t.alive:
+                grid.insert(t.position, t)
+        self._grid = grid
+
+    def target_by_id(self, tid: str | None) -> Target | None:
+        return self._by_id.get(tid) if tid is not None else None
 
     def nearest_alive_target(self, point: Vec3) -> Target | None:
+        """距 ``point`` 最近的存活目标。
+
+        有空间索引时走网格(与暴力遍历结果一致),否则回退暴力遍历。
+        """
+        if self._grid is not None:
+            return self._grid.nearest(point)
         best, best_d = None, float("inf")
         for tgt in self.targets:
             if not tgt.alive:
