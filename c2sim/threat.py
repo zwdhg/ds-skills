@@ -24,9 +24,9 @@ from c2sim.models import TargetKind, ThreatAssessment, ThreatLevel, Track
 class ThreatPolicy:
     """威胁研判的可调参数(战场/想定相关)。"""
 
-    defended_radius: float = 5_000.0   # 要地防护半径(米)
-    horizon: float = 300.0             # 研判时间视界(秒)
-    max_range: float = 150_000.0       # 逼近因子归一化用的参考距离(米)
+    defended_radius: float = 5_000.0   # "安全穹顶"防护半径(米)
+    horizon: float = 120.0             # 研判时间视界(秒)
+    max_range: float = 10_000.0        # 逼近因子归一化用的参考距离(米)
     # 四因子权重(自动归一化)。
     w_intent: float = 0.40
     w_urgency: float = 0.30
@@ -37,20 +37,22 @@ class ThreatPolicy:
 
 
 def classify_track(track: Track) -> TargetKind:
-    """由航迹运动学在线推断目标类型。
+    """推断航迹的目标类型。
 
-    经验规则,够用即可:超高速→弹道;高速低空→巡航导弹;慢速→无人机;
-    其余→有人机。
+    **优先采用光电(EO)识别结果**(若航迹已被光电确认);否则退回到基于
+    运动学的粗分类——这恰好体现了为何需要光电识别:仅凭运动学难以可靠
+    区分固定翼无人机与巡飞弹。
     """
+    if track.classification is not None:
+        return track.classification
     speed = track.velocity.norm()
-    altitude = track.position.z
-    if speed > 1500.0:
-        return TargetKind.BALLISTIC
-    if speed > 250.0 and altitude < 1000.0:
-        return TargetKind.CRUISE_MISSILE
-    if speed < 80.0:
-        return TargetKind.DRONE
-    return TargetKind.AIRCRAFT
+    if speed > 60.0:
+        return TargetKind.LOITERING_MUNITION
+    if speed >= 30.0:
+        return TargetKind.FIXED_WING_UAV
+    if speed >= 8.0:
+        return TargetKind.ROTARY_UAV
+    return TargetKind.MICRO_UAV
 
 
 def assess_track(

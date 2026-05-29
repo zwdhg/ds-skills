@@ -50,6 +50,63 @@ class Vec3:
         return (self.x, self.y, self.z)
 
 
+def deg2rad(deg: float) -> float:
+    return deg * math.pi / 180.0
+
+
+def los_basis(sensor: Vec3, target: Vec3) -> tuple[Vec3, Vec3, Vec3]:
+    """构造以传感器→目标视线(LOS)为基准的正交基。
+
+    返回 ``(e_range, e_az, e_el)``:
+
+    * ``e_range`` —— 沿视线方向(测距误差作用轴);
+    * ``e_az``    —— 水平面内、垂直于视线(方位角误差作用轴);
+    * ``e_el``    —— 垂直于前两者(俯仰角误差作用轴,低仰角时近似铅垂)。
+
+    当视线近似铅垂导致 ``e_az`` 退化时,回退到世界 x 轴构造,保证正交。
+    """
+    e_range = (target - sensor).unit()
+    up = Vec3(0.0, 0.0, 1.0)
+    e_az = up_cross = _cross(up, e_range)
+    if e_az.norm() < 1e-6:
+        e_az = _cross(Vec3(1.0, 0.0, 0.0), e_range)
+    e_az = e_az.unit()
+    e_el = _cross(e_range, e_az).unit()
+    return e_range, e_az, e_el
+
+
+def _cross(a: Vec3, b: Vec3) -> Vec3:
+    return Vec3(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
+
+
+def angular_measurement_noise(
+    sensor: Vec3,
+    target: Vec3,
+    sigma_range: float,
+    sigma_az_rad: float,
+    sigma_el_rad: float,
+    rng,
+) -> Vec3:
+    """在 LOS 基下生成各向异性量测噪声并叠加到真值位置。
+
+    距离误差沿视线;方位/俯仰角误差按 ``距离 × 角误差`` 折算为横向位移,
+    分别作用于 ``e_az`` / ``e_el`` 轴。俯仰角误差通常大于方位角误差,因而
+    高度方向误差更大——这正是参考资料指出的"雷达俯仰测量误差大"。
+    """
+    e_range, e_az, e_el = los_basis(sensor, target)
+    r = sensor.distance_to(target)
+    return (
+        target
+        + e_range * rng.gauss(0.0, sigma_range)
+        + e_az * rng.gauss(0.0, r * sigma_az_rad)
+        + e_el * rng.gauss(0.0, r * sigma_el_rad)
+    )
+
+
 def closest_point_of_approach(
     p1: Vec3, v1: Vec3, p2: Vec3, v2: Vec3
 ) -> tuple[float, float]:
@@ -68,6 +125,21 @@ def closest_point_of_approach(
     t = max(0.0, t)
     closest = (p1 + v1 * t) - (p2 + v2 * t)
     return t, closest.norm()
+
+
+def segment_cpa(rel_pos: Vec3, rel_vel: Vec3, dt: float) -> tuple[float, float]:
+    """两点在 ``[0, dt]`` 内做匀速相对运动时的最近接近。
+
+    给定相对位置 ``rel_pos`` 与相对速度 ``rel_vel``,返回 ``(t*, d*)``:
+    区间内最近时刻(裁剪到 ``[0, dt]``)与该最近距离。用于近炸引信:判断
+    Thunder 是否在本仿真步内掠过目标的杀伤半径。
+    """
+    v2 = rel_vel.dot(rel_vel)
+    if v2 == 0.0:
+        return 0.0, rel_pos.norm()
+    t = -rel_pos.dot(rel_vel) / v2
+    t = max(0.0, min(dt, t))
+    return t, (rel_pos + rel_vel * t).norm()
 
 
 def lead_intercept_time(

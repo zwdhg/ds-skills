@@ -1,11 +1,15 @@
 """几何与运动学工具测试。"""
 
+import random
 import unittest
 
 from c2sim.geometry import (
     Vec3,
+    angular_measurement_noise,
     closest_point_of_approach,
+    deg2rad,
     lead_intercept_time,
+    segment_cpa,
 )
 
 
@@ -29,7 +33,6 @@ class TestVec3(unittest.TestCase):
 
 class TestCPA(unittest.TestCase):
     def test_head_on_closes_to_zero(self):
-        # 两点相向而行,必在中途相遇,最近距离≈0。
         t, d = closest_point_of_approach(
             Vec3(-100, 0, 0), Vec3(10, 0, 0), Vec3(100, 0, 0), Vec3(-10, 0, 0)
         )
@@ -44,7 +47,6 @@ class TestCPA(unittest.TestCase):
         self.assertAlmostEqual(d, 50.0)
 
     def test_receding_clamped_to_now(self):
-        # 已经在分离:最近时刻为现在(t=0)。
         t, d = closest_point_of_approach(
             Vec3(0, 0, 0), Vec3(10, 0, 0), Vec3(-100, 0, 0), Vec3(-10, 0, 0)
         )
@@ -52,9 +54,21 @@ class TestCPA(unittest.TestCase):
         self.assertAlmostEqual(d, 100.0)
 
 
+class TestSegmentCPA(unittest.TestCase):
+    def test_pass_within_window(self):
+        # 相对位置 100m 前方,相对速度 -200 m/s,1s 内掠过到 0。
+        t, d = segment_cpa(Vec3(100, 5, 0), Vec3(-200, 0, 0), 1.0)
+        self.assertAlmostEqual(d, 5.0, places=6)
+        self.assertGreater(t, 0.0)
+
+    def test_clamped_to_window(self):
+        # 最近时刻在 window 之外(将来),被裁剪到 dt。
+        t, d = segment_cpa(Vec3(1000, 0, 0), Vec3(-10, 0, 0), 0.5)
+        self.assertEqual(t, 0.5)
+
+
 class TestLeadIntercept(unittest.TestCase):
     def test_stationary_target(self):
-        # 静止目标在 1000m 外,弹速 100 → 10s 命中。
         t = lead_intercept_time(
             Vec3(0, 0, 0), Vec3(1000, 0, 0), Vec3(0, 0, 0), 100.0
         )
@@ -68,16 +82,36 @@ class TestLeadIntercept(unittest.TestCase):
         speed = 200.0
         t = lead_intercept_time(shooter, tpos, tvel, speed)
         self.assertIsNotNone(t)
-        # 命中点处:弹飞行距离 == speed*t。
         aim = tpos + tvel * t
         self.assertAlmostEqual(shooter.distance_to(aim), speed * t, places=4)
 
     def test_unreachable_returns_none(self):
-        # 目标背向远离且比弹快:追不上。
         t = lead_intercept_time(
             Vec3(0, 0, 0), Vec3(1000, 0, 0), Vec3(500, 0, 0), 100.0
         )
         self.assertIsNone(t)
+
+
+class TestAngularNoise(unittest.TestCase):
+    def test_zero_sigma_is_exact(self):
+        rng = random.Random(0)
+        target = Vec3(5000, 1000, 800)
+        out = angular_measurement_noise(Vec3(), target, 0.0, 0.0, 0.0, rng)
+        self.assertAlmostEqual(out.distance_to(target), 0.0, places=6)
+
+    def test_elevation_error_dominates_altitude(self):
+        # 俯仰角误差远大于方位/测距时,高度(z)误差应明显大于水平误差。
+        rng = random.Random(1)
+        sensor = Vec3(0, 0, 0)
+        target = Vec3(8000, 0, 50)  # 远、低仰角
+        zs, hs = [], []
+        for _ in range(400):
+            m = angular_measurement_noise(
+                sensor, target, 1.0, deg2rad(0.1), deg2rad(3.0), rng
+            )
+            zs.append(abs(m.z - target.z))
+            hs.append(abs(m.y - target.y))
+        self.assertGreater(sum(zs) / len(zs), sum(hs) / len(hs))
 
 
 if __name__ == "__main__":

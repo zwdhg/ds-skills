@@ -1,9 +1,10 @@
-"""仿真域内的核心数据模型。
+"""仿真域内的核心数据模型(反无人机 C-UAS 规格)。
 
-这些类型在处理链路各环节之间传递:传感器产出 :class:`SensorReport`,
-融合器维护 :class:`Track`,研判器输出 :class:`ThreatAssessment`,
-拦截环节生成 :class:`Command`。:class:`Target` 是引擎掌握的"真值",
-对指控链路不可见——链路只能看到带噪的航迹。
+这些类型在处理链路各环节之间传递:Spotter Pro 各模块产出
+:class:`SensorReport`,航迹融合维护 :class:`Track`,Skyshield Nexus 研判
+输出 :class:`ThreatAssessment`、拦截环节生成 :class:`Command`。
+:class:`Target` 是引擎掌握的"真值",对指控链路不可见——链路只能看到
+带噪航迹。
 """
 
 from __future__ import annotations
@@ -36,22 +37,30 @@ class ThreatLevel(enum.IntEnum):
 
 
 class TargetKind(enum.Enum):
-    """来袭目标类型,影响默认杀伤性权重。"""
+    """来袭目标类型(低空小目标),影响默认杀伤性权重。"""
 
-    AIRCRAFT = "aircraft"
-    CRUISE_MISSILE = "cruise_missile"
-    DRONE = "drone"
-    BALLISTIC = "ballistic"
+    MICRO_UAV = "micro_uav"            # 微型多旋翼/穿越机
+    ROTARY_UAV = "rotary_uav"          # 旋翼无人机
+    FIXED_WING_UAV = "fixed_wing_uav"  # 固定翼无人机
+    LOITERING_MUNITION = "loitering_munition"  # 巡飞弹(如 Shahed-136)
 
     @property
     def lethality(self) -> float:
         """[0,1] 区间的相对杀伤性,用于威胁研判。"""
         return {
-            TargetKind.DRONE: 0.3,
-            TargetKind.AIRCRAFT: 0.6,
-            TargetKind.CRUISE_MISSILE: 0.85,
-            TargetKind.BALLISTIC: 1.0,
+            TargetKind.MICRO_UAV: 0.25,
+            TargetKind.ROTARY_UAV: 0.45,
+            TargetKind.FIXED_WING_UAV: 0.7,
+            TargetKind.LOITERING_MUNITION: 1.0,
         }[self]
+
+
+class SensorModality(enum.Enum):
+    """Spotter Pro 的探测模态。"""
+
+    RF = "rf"        # 频谱测向(二维定向,远程预警/引导)
+    RADAR = "radar"  # X 波段 AESA(三维位置)
+    EO = "eo"        # 光电(高精度角度 + 识别)
 
 
 # ---------------------------------------------------------------------------
@@ -61,17 +70,37 @@ class TargetKind(enum.Enum):
 
 @dataclass
 class Target:
-    """来袭目标的"真值"状态,仅引擎与传感器可见。"""
+    """来袭无人机目标的"真值"状态,仅引擎与传感器可见。
+
+    目标朝攻击瞄准点 ``aim``(被掩护要地)自主寻的;进入 ``terminal_range``
+    后切换到 ``terminal_speed`` 末段加速突击(对应"中段巡飞、末段加速")。
+    """
 
     target_id: str
     position: Vec3
-    velocity: Vec3
-    kind: TargetKind = TargetKind.AIRCRAFT
-    rcs: float = 1.0  # 雷达散射截面(平方米),影响探测概率
+    aim: Vec3
+    cruise_speed: float
+    kind: TargetKind = TargetKind.FIXED_WING_UAV
+    rcs: float = 0.1                    # 雷达散射截面(平方米)
+    terminal_speed: float | None = None  # 末段突击速度(None 表示不加速)
+    terminal_range: float = 1500.0      # 切入末段的距要地距离(米)
+    emits_rf: bool = True               # 是否辐射可被频谱测向截获的信号
     alive: bool = True
 
+    def current_speed(self) -> float:
+        if (
+            self.terminal_speed is not None
+            and self.position.distance_to(self.aim) <= self.terminal_range
+        ):
+            return self.terminal_speed
+        return self.cruise_speed
+
+    @property
+    def velocity(self) -> Vec3:
+        return (self.aim - self.position).unit() * self.current_speed()
+
     def advance(self, dt: float) -> None:
-        """匀速推进 ``dt`` 秒。"""
+        """朝瞄准点寻的推进 ``dt`` 秒。"""
         self.position = self.position + self.velocity * dt
 
 
@@ -82,31 +111,34 @@ class Target:
 
 @dataclass(frozen=True)
 class SensorReport:
-    """单部传感器在某一时刻对某一目标的一次带噪测量。
+    """Spotter Pro 某模块在某时刻对某目标的一次量测。
 
-    报告**不含**目标真实身份——融合器须自行完成数据关联。
+    报告**不含**目标真实身份(``truth_id`` 仅供仿真打分/调试)。
+    ``classification`` 仅由光电模块在完成识别后填写。
     """
 
     sensor_id: str
+    modality: SensorModality
     timestamp: float
-    position: Vec3  # 带噪的量测位置
-    position_sigma: float  # 量测一倍标准差(米),反映精度
-    # 真值目标编号,仅供仿真打分/调试,链路不得据此关联。
+    position: Vec3          # 量测位置(RF 模态为粗略定向折算点)
+    position_sigma: float   # 等效一倍标准差(米),用于融合加权与波门
+    classification: TargetKind | None = None  # 光电识别结果
     truth_id: str | None = None
 
 
 @dataclass
 class Track:
-    """由一个或多个传感器报告融合得到的、持续维护的目标航迹。"""
+    """由多模态量测融合得到的、持续维护的目标航迹。"""
 
     track_id: str
     position: Vec3
     velocity: Vec3
     last_update: float
-    # 该航迹本帧汇聚的传感器编号集合。
     contributing_sensors: set[str] = field(default_factory=set)
-    hits: int = 0  # 累计关联到的报告数,衡量航迹质量/置信度
-    coast_time: float = 0.0  # 距上次成功关联的时长(秒)
+    modalities: set[SensorModality] = field(default_factory=set)
+    classification: TargetKind | None = None  # 光电确认的类型
+    hits: int = 0
+    coast_time: float = 0.0
 
     @property
     def confidence(self) -> float:
@@ -121,11 +153,11 @@ class ThreatAssessment:
     """对单条航迹的威胁研判结果。"""
 
     track_id: str
-    score: float  # 归一化威胁分 [0,1]
+    score: float
     level: ThreatLevel
-    time_to_impact: float | None  # 预计抵达被掩护要地的时间(秒),None 为不来袭
-    closest_approach: float  # 对要地的最近接近距离(米)
-    rationale: str  # 人类可读的研判依据
+    time_to_impact: float | None
+    closest_approach: float
+    rationale: str
 
 
 # ---------------------------------------------------------------------------
@@ -134,21 +166,21 @@ class ThreatAssessment:
 
 
 class CommandKind(enum.Enum):
-    ENGAGE = "engage"  # 交战:发射拦截弹
-    HOLD = "hold"      # 暂不交战(无可用拦截资源等)
+    ENGAGE = "engage"  # 交战:调度发射 Thunder
+    HOLD = "hold"      # 暂不交战(无可用拦截资源/超出作业半径等)
 
 
 @dataclass
 class Command:
-    """指控链路下发给某 Thunder 发射单元的拦截指令。"""
+    """Skyshield Nexus 下发给某发射平台的拦截指令。"""
 
     command_id: str
     kind: CommandKind
     timestamp: float
-    track_id: str | None  # 交战目标航迹
-    battery_id: str | None  # 受令发射单元
-    intercept_point: Vec3 | None  # 预测拦截点
-    intercept_time: float | None  # 预计命中时刻(绝对仿真时间)
+    track_id: str | None
+    pad_id: str | None             # 受令发射平台
+    intercept_point: Vec3 | None   # 预测拦截点
+    intercept_time: float | None   # 预计命中时刻(绝对仿真时间)
     note: str = ""
 
 

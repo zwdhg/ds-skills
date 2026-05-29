@@ -27,6 +27,8 @@ class _FusedMeasurement:
     position: Vec3
     sigma: float
     sensors: set[str]
+    modalities: set = field(default_factory=set)
+    classification: object | None = None
 
 
 def fuse_reports(
@@ -67,10 +69,16 @@ def _inverse_variance_fuse(reports: list[SensorReport]) -> _FusedMeasurement:
     fused_pos = acc / wsum
     # 融合后等效标准差:独立量测合成精度提升。
     fused_sigma = (1.0 / wsum) ** 0.5
+    # 光电识别结果(若有)并入融合量测。
+    classification = next(
+        (r.classification for r in reports if r.classification is not None), None
+    )
     return _FusedMeasurement(
         position=fused_pos,
         sigma=fused_sigma,
         sensors={r.sensor_id for r in reports},
+        modalities={r.modality for r in reports},
+        classification=classification,
     )
 
 
@@ -153,6 +161,9 @@ class TrackFusion:
         trk.coast_time = 0.0
         trk.hits += 1
         trk.contributing_sensors = set(m.sensors)
+        trk.modalities = set(m.modalities)
+        if m.classification is not None:
+            trk.classification = m.classification
 
     def _spawn_track(self, m: _FusedMeasurement, now: float) -> None:
         """由一个无主量测起始新航迹(初始速度未知,置零)。"""
@@ -163,6 +174,8 @@ class TrackFusion:
             velocity=Vec3(),
             last_update=now,
             contributing_sensors=set(m.sensors),
+            modalities=set(m.modalities),
+            classification=m.classification,
             hits=1,
             coast_time=0.0,
         )

@@ -1,11 +1,12 @@
 """拦截指令生成(火力-目标分配)。
 
-依据威胁研判结果,把 Thunder 发射单元的有限拦截弹分配给威胁航迹,
-为每次交战解算**预测拦截点**与命中时刻,并下发 :class:`Command`。
+对应 Skyshield Nexus 的拦截策略生成:依据威胁研判结果,结合各发射平台的
+**分布式部署位置、作业半径与可用 Thunder 库存**,为威胁航迹自主优选最优
+发射平台,解算预测拦截点与命中时刻,下发 :class:`Command`(ENGAGE/HOLD)。
 
-分配策略:按威胁分从高到低贪心;每条航迹据其威胁等级确定齐射弹数
-(shoot-look 简化为按等级配弹);为每发拦截弹挑选能覆盖该拦截点、
-且剩余库存最多的发射单元。无可用资源时下发 HOLD 指令。
+分配策略:按威胁分从高到低贪心;每条航迹据其威胁等级确定齐射架数;为每架
+Thunder 挑选**作业半径覆盖该拦截点、且剩余库存最多**的发射平台。无可用资源
+或超出作业半径时下发 HOLD。
 """
 
 from __future__ import annotations
@@ -21,14 +22,14 @@ from c2sim.models import (
     Track,
     next_id,
 )
-from c2sim.weapons import Interceptor, ThunderBattery
+from c2sim.weapons import LaunchPad, Thunder
 
 
 @dataclass
 class EngagementPolicy:
     """交战规则参数。"""
 
-    engage_level: ThreatLevel = ThreatLevel.MEDIUM  # 达到此等级方可交战
+    engage_level: ThreatLevel = ThreatLevel.MEDIUM
     salvo_by_level: dict[ThreatLevel, int] = field(
         default_factory=lambda: {
             ThreatLevel.MEDIUM: 1,
@@ -43,59 +44,56 @@ class EngagementPolicy:
 
 @dataclass
 class _Solution:
-    battery: ThunderBattery
+    pad: LaunchPad
     intercept_point: Vec3
     flight_time: float
 
 
-def _solve(battery: ThunderBattery, track: Track, now: float) -> _Solution | None:
-    """解算某发射单元对某航迹的拦截诸元;不可达返回 None。"""
+def _solve(pad: LaunchPad, track: Track) -> _Solution | None:
+    """解算某发射平台对某航迹的拦截诸元;不可达返回 None。"""
     t = lead_intercept_time(
-        battery.position, track.position, track.velocity, battery.interceptor_speed
+        pad.position, track.position, track.velocity, pad.thunder_max_speed
     )
     if t is None:
         return None
     intercept_point = track.position + track.velocity * t
-    if not battery.can_reach(intercept_point):
+    if not pad.can_reach(intercept_point):
         return None
-    return _Solution(battery=battery, intercept_point=intercept_point, flight_time=t)
+    return _Solution(pad=pad, intercept_point=intercept_point, flight_time=t)
 
 
-def _best_battery(
-    batteries: list[ThunderBattery], track: Track, now: float
-) -> _Solution | None:
-    """在所有可达发射单元中择优:优先库存多,其次飞行时间短。"""
-    solutions = [s for b in batteries if (s := _solve(b, track, now)) is not None]
+def _best_pad(pads: list[LaunchPad], track: Track) -> _Solution | None:
+    """在所有可达发射平台中择优:优先库存多,其次飞行时间短。"""
+    solutions = [s for p in pads if (s := _solve(p, track)) is not None]
     if not solutions:
         return None
-    solutions.sort(key=lambda s: (-s.battery.inventory, s.flight_time))
+    solutions.sort(key=lambda s: (-s.pad.inventory, s.flight_time))
     return solutions[0]
 
 
 def plan_and_fire(
     assessments: list[ThreatAssessment],
     tracks: dict[str, Track],
-    batteries: list[ThunderBattery],
+    pads: list[LaunchPad],
     policy: EngagementPolicy,
     now: float,
     engaged_counts: dict[str, int],
-) -> tuple[list[Command], list[Interceptor]]:
+) -> tuple[list[Command], list[Thunder]]:
     """生成拦截指令并实施发射。
 
     参数:
         assessments: 已按威胁分降序排列的研判结果。
         tracks: 航迹查找表(track_id → Track)。
-        batteries: 可调度的 Thunder 发射单元(库存会被原地扣减)。
+        pads: 可调度的发射平台(库存会被原地扣减)。
         policy: 交战规则。
         now: 当前仿真时间。
-        engaged_counts: 各航迹已承诺的拦截弹数(跨帧累计),原地更新,
-            避免对同一目标重复过度交战。
+        engaged_counts: 各航迹已承诺的 Thunder 架数(跨帧累计),原地更新。
 
     返回:
-        ``(commands, interceptors)`` —— 本帧下发的指令与新发射的拦截弹。
+        ``(commands, thunders)`` —— 本帧下发的指令与新发射的 Thunder。
     """
     commands: list[Command] = []
-    interceptors: list[Interceptor] = []
+    thunders: list[Thunder] = []
 
     for assessment in assessments:
         if assessment.level < policy.engage_level:
@@ -111,7 +109,7 @@ def plan_and_fire(
             continue
 
         for _ in range(needed):
-            sol = _best_battery(batteries, track, now)
+            sol = _best_pad(pads, track)
             if sol is None:
                 commands.append(
                     Command(
@@ -119,19 +117,19 @@ def plan_and_fire(
                         kind=CommandKind.HOLD,
                         timestamp=now,
                         track_id=track.track_id,
-                        battery_id=None,
+                        pad_id=None,
                         intercept_point=None,
                         intercept_time=None,
-                        note="无可用拦截资源或超出射界,暂缓交战",
+                        note="无可用 Thunder 或超出作业半径,暂缓交战",
                     )
                 )
                 break
 
             intercept_time = now + sol.flight_time
-            interceptor = sol.battery.fire(
+            thunder = sol.pad.fire(
                 track.track_id, sol.intercept_point, intercept_time, now
             )
-            interceptors.append(interceptor)
+            thunders.append(thunder)
             engaged_counts[track.track_id] = (
                 engaged_counts.get(track.track_id, 0) + 1
             )
@@ -141,15 +139,14 @@ def plan_and_fire(
                     kind=CommandKind.ENGAGE,
                     timestamp=now,
                     track_id=track.track_id,
-                    battery_id=sol.battery.battery_id,
+                    pad_id=sol.pad.pad_id,
                     intercept_point=sol.intercept_point,
                     intercept_time=intercept_time,
                     note=(
-                        f"{assessment.level.label}威胁 → {sol.battery.battery_id} "
-                        f"发射 {interceptor.interceptor_id}, "
-                        f"飞行 {sol.flight_time:.1f}s"
+                        f"{assessment.level.label}威胁 → {sol.pad.pad_id} "
+                        f"发射 {thunder.interceptor_id}, 飞行 {sol.flight_time:.1f}s"
                     ),
                 )
             )
 
-    return commands, interceptors
+    return commands, thunders
