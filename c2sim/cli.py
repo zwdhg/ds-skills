@@ -19,12 +19,14 @@ _SCENARIOS = {
     "point": "核心要域点状防护",
     "border": "边境线带状防护",
     "swarm": "蜂群突击(规模/饱和)",
+    "decoy": "亚视场诱饵(误关联压力)",
 }
 
 
 def _named_builder(key: str):
     from c2sim.scenarios import (
         build_border_band_scenario,
+        build_decoy_scenario,
         build_point_defense_scenario,
         build_swarm_scenario,
     )
@@ -32,6 +34,7 @@ def _named_builder(key: str):
         "point": build_point_defense_scenario,
         "border": build_border_band_scenario,
         "swarm": build_swarm_scenario,
+        "decoy": build_decoy_scenario,
     }[key]
 
 

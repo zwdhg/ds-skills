@@ -231,5 +231,47 @@ def build_swarm_scenario(seed: int = 2026, n: int = 40) -> Scenario:
     )
 
 
+def build_decoy_scenario(seed: int = 2026, with_decoys: bool = True) -> Scenario:
+    """亚视场诱饵压力想定:量化末段**误关联**。
+
+    四个突击波,每波 1 个高价值真目标(RF 静默巡飞弹,须 Thunder 硬杀伤),
+    在 ``with_decoys=True`` 时各伴随 2 个**亚视场间距(~250m)内的强回波诱饵**
+    (RCS 远大于真目标)。信杂比加权下,导引头常被诱饵夺锁 → 真目标漏防。
+    ``with_decoys=False`` 为对照(同样的真目标、无诱饵),二者之差即诱饵经
+    误关联取得的突防增益。无干扰单元(隔离硬杀伤,聚焦误关联)。
+    """
+    asset = Vec3(0.0, 0.0, 0.0)
+    spotters = [SpotterPro("SPT-C", Vec3(0.0, 0.0, 20.0), azimuth_width_deg=360.0)]
+    pads = [
+        LaunchPad(f"PAD-{a:03d}", _polar(0, 0, a, 3_000, 15), inventory=6)
+        for a in (45, 135, 225, 315)
+    ]
+
+    targets = []
+    for k, az in enumerate((45, 135, 225, 315)):
+        start = _polar(0, 0, az, 9_000, 500.0)
+        targets.append(Target(
+            target_id=f"REAL-{k}", position=start, aim=asset, cruise_speed=50.0,
+            kind=TargetKind.LOITERING_MUNITION, rcs=0.15, emits_rf=False,
+            terminal_speed=58.0,
+        ))
+        if with_decoys:
+            perp = _polar(0, 0, az + 90.0, 1.0, 0.0)  # 单位横向矢量
+            for j, off in enumerate((-250.0, 250.0)):
+                targets.append(Target(
+                    target_id=f"DECOY-{k}-{j}",
+                    position=Vec3(start.x + perp.x * off, start.y + perp.y * off,
+                                  start.z),
+                    aim=asset, cruise_speed=50.0,
+                    kind=TargetKind.FIXED_WING_UAV, rcs=0.5,  # 强回波诱饵
+                    emits_rf=False,
+                ))
+
+    return Scenario(
+        asset=asset, targets=targets, spotters=spotters, pads=pads,
+        seed=seed, max_time=400.0,
+    )
+
+
 # 默认演示想定。
 build_demo_scenario = build_point_defense_scenario

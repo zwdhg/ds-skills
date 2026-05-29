@@ -44,6 +44,7 @@ class Thunder:
     acquisition_prob: float    # 进入截获距离后每帧锁定概率
     seeker_sigma: float        # 末段图像寻的测量误差(米)
     max_turn_rate: float       # 最大转弯率(弧度/秒),横向过载约束
+    lock_loss_prob: float      # 末段每帧丢锁(脱锁/被诱饵打断)概率
     intercept_point: Vec3
     intercept_time: float      # 绝对仿真时间(仅供制导/复盘参考)
     launch_time: float
@@ -111,6 +112,7 @@ class LaunchPad:
     acquisition_prob: float = 0.7
     seeker_sigma: float = 4.0          # 末段图像寻的测量误差(米)
     max_turn_rate: float = 2.0         # 最大转弯率(弧度/秒),≈8g@67m/s
+    lock_loss_prob: float = 0.0        # 末段每帧丢锁概率(默认 0;研究可调)
 
     def can_reach(self, point: Vec3) -> bool:
         """预测拦截点是否在作业半径内且尚有在架 Thunder。"""
@@ -146,6 +148,7 @@ class LaunchPad:
             acquisition_prob=self.acquisition_prob,
             seeker_sigma=self.seeker_sigma,
             max_turn_rate=self.max_turn_rate,
+            lock_loss_prob=self.lock_loss_prob,
             intercept_point=intercept_point,
             intercept_time=intercept_time,
             launch_time=now,

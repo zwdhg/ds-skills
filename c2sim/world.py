@@ -78,6 +78,35 @@ def select_seeker_lock(
     return min(basket, key=lambda t: key_point.distance_to(t.position))
 
 
+def seeker_lock(basket, cue, fallback, rng, gate: float):
+    """按信杂比加权概率锁定 basket 内的真实目标(导引头视场内的回波竞争)。
+
+    候选权重 ``w = rcs / (1 + (距线索/gate)²)``——越接近上行线索、回波越强
+    (RCS 越大)越易被锁;据权重做轮盘抽样。这使预定(近线索)目标通常胜出,
+    但**强回波的邻近诱饵可能夺锁**(误关联随信杂比涌现)。
+
+    仅在 basket 含**多个竞争目标**时消耗随机数;单一候选直接返回,以免在稀疏
+    态势下无谓扰动随机流(保持确定性)。
+    """
+    if not basket:
+        return None
+    if len(basket) == 1:
+        return basket[0]
+    key_point = cue if cue is not None else fallback
+    weights = [t.rcs / (1.0 + (key_point.distance_to(t.position) / gate) ** 2)
+               for t in basket]
+    total = sum(weights)
+    if total <= 0.0:
+        return min(basket, key=lambda t: key_point.distance_to(t.position))
+    r = rng.random() * total
+    acc = 0.0
+    for t, w in zip(basket, weights):
+        acc += w
+        if r <= acc:
+            return t
+    return basket[-1]
+
+
 class World:
     """仿真真值与物理引擎。"""
 

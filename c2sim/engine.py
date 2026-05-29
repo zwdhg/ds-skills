@@ -31,7 +31,7 @@ from c2sim.strategies import (
 )
 from c2sim.threat import ThreatPolicy, WeightedThreatModel
 from c2sim.weapons import HunterMax, LaunchPad, Phase, Thunder
-from c2sim.world import World, select_seeker_lock
+from c2sim.world import World, seeker_lock
 
 
 @dataclass
@@ -225,12 +225,23 @@ class Engine:
     # -- 控制器:制导 ----------------------------------------------------
 
     def _guide_terminal(self) -> None:
-        """末段拦截:对已锁定 Thunder,以所锁真实目标(带导引头噪声)寻的。"""
+        """末段拦截:对已锁定 Thunder 以所锁真实目标寻的;支持丢锁/再捕获。
+
+        所锁目标若已被他弹击杀/消失,或发生丢锁(``lock_loss_prob``),则**丢锁**
+        回到搜索态——下一拍由 :meth:`_guide_search` 重新捕获 basket 内目标,
+        从而回收原本浪费的弹。
+        """
         for itc in self.world.thunders:
             if itc.detonated or not itc.alive or not itc.acquired:
                 continue
             victim = self.world.target_by_id(itc.locked_target_id)
-            if victim is None or not victim.alive:
+            lost = victim is None or not victim.alive
+            if not lost and itc.lock_loss_prob > 0.0:
+                lost = self.rng.random() < itc.lock_loss_prob
+            if lost:
+                itc.acquired = False
+                itc.locked_target_id = None
+                itc.phase = Phase.SEARCH
                 continue
             seen = self.world.seeker_fix(victim, itc.seeker_sigma)
             sol = self.guidance.aim(
@@ -263,7 +274,10 @@ class Engine:
                     itc.phase = Phase.SEARCH
                     if self.rng.random() <= itc.acquisition_prob:
                         cue = trk.position if trk is not None else None
-                        victim = select_seeker_lock(basket, cue, itc.position)
+                        victim = seeker_lock(
+                            basket, cue, itc.position, self.rng,
+                            itc.acquisition_range,
+                        )
                         itc.acquired = True
                         itc.locked_target_id = victim.target_id
                         itc.phase = Phase.TERMINAL
