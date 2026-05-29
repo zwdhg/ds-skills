@@ -107,6 +107,34 @@ def angular_measurement_noise(
     )
 
 
+def turn_towards(current: Vec3, desired: Vec3, max_angle: float) -> Vec3:
+    """把 ``current`` 朝 ``desired`` 方向至多旋转 ``max_angle`` 弧度。
+
+    返回矢量的**模长取 ``desired`` 的模长**(即保持期望速率),方向被限制在
+    单步可达的转角内——用于对拦截弹施加转弯率(横向过载)约束。两矢量近似
+    同向或反向退化时做安全回退。
+    """
+    speed = desired.norm()
+    if speed == 0.0:
+        return Vec3()
+    cu = current.unit()
+    du = desired.unit()
+    if cu.norm() == 0.0:
+        return desired
+    dot = max(-1.0, min(1.0, cu.dot(du)))
+    angle = math.acos(dot)
+    if angle <= max_angle or angle == 0.0:
+        return desired
+    perp = du - cu * dot
+    if perp.norm() < 1e-9:
+        # 几乎反向:任取一条与 cu 垂直的方向起转。
+        ref = Vec3(1.0, 0.0, 0.0) if abs(cu.x) < 0.9 else Vec3(0.0, 1.0, 0.0)
+        perp = ref - cu * cu.dot(ref)
+    perp = perp.unit()
+    new_dir = cu * math.cos(max_angle) + perp * math.sin(max_angle)
+    return new_dir * speed
+
+
 def closest_point_of_approach(
     p1: Vec3, v1: Vec3, p2: Vec3, v2: Vec3
 ) -> tuple[float, float]:

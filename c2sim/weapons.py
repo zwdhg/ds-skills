@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from c2sim.geometry import Vec3
 from c2sim.models import next_id
@@ -43,9 +43,11 @@ class Thunder:
     acquisition_range: float   # 弹载传感器截获距离(米)
     acquisition_prob: float    # 进入截获距离后每帧锁定概率
     seeker_sigma: float        # 末段图像寻的测量误差(米)
+    max_turn_rate: float       # 最大转弯率(弧度/秒),横向过载约束
     intercept_point: Vec3
     intercept_time: float      # 绝对仿真时间(仅供制导/复盘参考)
     launch_time: float
+    desired_velocity: Vec3 = field(default_factory=Vec3)  # 制导指令速度(期望)
     phase: Phase = Phase.APPROACH
     acquired: bool = False
     locked_target_id: str | None = None  # 末段锁定的真实目标(弹上导引头)
@@ -56,10 +58,14 @@ class Thunder:
     detonated: bool = False
 
     def steer_to(self, point: Vec3, intercept_time: float) -> None:
-        """把速度矢量指向(更新后的)拦截点,按最大速度飞行。"""
+        """下发制导**指令**:期望以最大速度指向拦截点。
+
+        仅设定期望速度(``desired_velocity``);实际速度受转弯率约束,由
+        :meth:`c2sim.world.World.integrate_thunders` 在积分时逼近期望方向。
+        """
         self.intercept_point = point
         self.intercept_time = intercept_time
-        self.velocity = (point - self.position).unit() * self.max_speed
+        self.desired_velocity = (point - self.position).unit() * self.max_speed
 
     def out_of_range(self) -> bool:
         """是否已飞出作业半径(应自毁/返航,不再有效)。
@@ -104,6 +110,7 @@ class LaunchPad:
     acquisition_range: float = 1_200.0
     acquisition_prob: float = 0.7
     seeker_sigma: float = 4.0          # 末段图像寻的测量误差(米)
+    max_turn_rate: float = 2.0         # 最大转弯率(弧度/秒),≈8g@67m/s
 
     def can_reach(self, point: Vec3) -> bool:
         """预测拦截点是否在作业半径内且尚有在架 Thunder。"""
@@ -122,7 +129,7 @@ class LaunchPad:
         if self.inventory <= 0:
             raise RuntimeError(f"发射平台 {self.pad_id} 已无在架 Thunder")
         self.inventory -= 1
-        direction = (intercept_point - self.position).unit()
+        velocity = (intercept_point - self.position).unit() * self.thunder_max_speed
         return Thunder(
             interceptor_id=next_id("THDR"),
             pad_id=self.pad_id,
@@ -130,13 +137,15 @@ class LaunchPad:
             origin=self.position,
             operating_radius=self.operating_radius,
             position=self.position,
-            velocity=direction * self.thunder_max_speed,
+            velocity=velocity,
             max_speed=self.thunder_max_speed,
             lethal_radius=self.lethal_radius,
             acquisition_range=self.acquisition_range,
             acquisition_prob=self.acquisition_prob,
             seeker_sigma=self.seeker_sigma,
+            max_turn_rate=self.max_turn_rate,
             intercept_point=intercept_point,
             intercept_time=intercept_time,
             launch_time=now,
+            desired_velocity=velocity,
         )

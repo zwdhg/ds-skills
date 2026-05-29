@@ -15,7 +15,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
-from c2sim.geometry import Vec3, segment_cpa
+from c2sim.geometry import Vec3, segment_cpa, turn_towards
 from c2sim.models import Target
 from c2sim.weapons import HunterMax, Thunder
 
@@ -97,6 +97,10 @@ class World:
         for itc in self.thunders:
             if not itc.alive or itc.detonated:
                 continue
+            # 转弯率约束:实际速度朝制导指令方向至多旋转 max_turn_rate·dt。
+            itc.velocity = turn_towards(
+                itc.velocity, itc.desired_velocity, itc.max_turn_rate * dt
+            )
             if itc.acquired:
                 victim = self.target_by_id(itc.locked_target_id)
                 if victim is not None and victim.alive:

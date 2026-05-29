@@ -24,6 +24,17 @@ from c2sim.geometry import Vec3, angular_measurement_noise, deg2rad
 from c2sim.models import SensorModality, SensorReport, Target, TargetKind
 
 
+def _poisson(lam: float, rng: random.Random) -> int:
+    """泊松采样(Knuth 算法),用于每帧虚警计数。"""
+    target = math.exp(-lam)
+    k, p = 0, 1.0
+    while True:
+        k += 1
+        p *= rng.random()
+        if p <= target:
+            return k - 1
+
+
 @dataclass
 class SpotterPro:
     """多模态探测站。
@@ -60,6 +71,10 @@ class SpotterPro:
     eo_sigma_range: float = 15.0
     eo_sigma_ang: float = 0.15e-3       # 0.15 mrad
     eo_classify_prob: float = 0.9       # 识别正确概率
+
+    # --- 虚警/杂波 ---
+    clutter_rate: float = 0.0           # 每帧期望虚警数(泊松);0 表示无杂波
+    clutter_sigma: float = 80.0         # 虚警等效量测误差(米)
 
     # 内部状态:当前雷达 TAS 跟踪与光电锁定的目标(以真值索引,代表硬件波束指向)
     _tas: set[str] = field(default_factory=set)
@@ -201,7 +216,37 @@ class SpotterPro:
                 )
             )
 
+        # 4) 虚警/杂波:在扇区/作用距离内随机产生无主量测(考验融合鲁棒性)。
+        if self.clutter_rate > 0.0:
+            reports.extend(self._clutter(now, rng))
+
         return reports
+
+    def _clutter(self, now: float, rng: random.Random) -> list[SensorReport]:
+        n = _poisson(self.clutter_rate, rng)
+        out: list[SensorReport] = []
+        half = self.azimuth_width_deg / 2.0
+        for _ in range(n):
+            az = math.radians(
+                self.azimuth_center_deg + rng.uniform(-half, half)
+            )
+            rng_r = rng.uniform(self.radar_blind_zone, self.radar_ref_range)
+            pos = Vec3(
+                self.position.x + rng_r * math.cos(az),
+                self.position.y + rng_r * math.sin(az),
+                rng.uniform(0.0, 500.0),
+            )
+            out.append(
+                SensorReport(
+                    sensor_id=f"{self.station_id}/RADAR",
+                    modality=SensorModality.RADAR,
+                    timestamp=now,
+                    position=pos,
+                    position_sigma=self.clutter_sigma,
+                    truth_id=None,
+                )
+            )
+        return out
 
     def _classify(self, target: Target, rng: random.Random) -> TargetKind:
         """光电识别:高概率给出正确类型,否则误判为相近类型。"""
