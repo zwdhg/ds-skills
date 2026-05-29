@@ -152,3 +152,17 @@ def assess(
     results = [assess_track(t, asset, policy) for t in tracks]
     results.sort(key=lambda a: a.score, reverse=True)
     return results
+
+
+class WeightedThreatModel:
+    """默认威胁研判模型(:class:`c2sim.strategies.ThreatModel`)。
+
+    四因子加权合成,参数由 :class:`ThreatPolicy` 注入。
+    """
+
+    def __init__(self, policy: ThreatPolicy | None = None) -> None:
+        self.policy = policy or ThreatPolicy()
+
+    def assess(self, tracks: list[Track], asset: Vec3) -> list[ThreatAssessment]:
+        return assess(tracks, asset, self.policy)
+

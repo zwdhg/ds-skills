@@ -162,3 +162,27 @@ def plan_and_fire(
             )
 
     return commands, thunders
+
+
+class GreedyAssigner:
+    """默认火力-目标分配器(:class:`c2sim.strategies.WeaponTargetAssigner`)。
+
+    按威胁降序贪心分配,参数由 :class:`EngagementPolicy` 注入。
+    """
+
+    def __init__(self, policy: EngagementPolicy | None = None) -> None:
+        self.policy = policy or EngagementPolicy()
+
+    def plan(
+        self,
+        assessments: list[ThreatAssessment],
+        tracks: dict[str, Track],
+        pads: list[LaunchPad],
+        now: float,
+        engaged_counts: dict[str, int],
+        skip_tracks: set[str] | None = None,
+    ) -> tuple[list[Command], list[Thunder]]:
+        return plan_and_fire(
+            assessments, tracks, pads, self.policy, now, engaged_counts,
+            skip_tracks=skip_tracks,
+        )

@@ -18,11 +18,18 @@ import random
 from dataclasses import dataclass, field
 
 from c2sim.fusion import TrackFusion
-from c2sim.geometry import Vec3, lead_intercept_time, segment_cpa
-from c2sim.interception import EngagementPolicy, plan_and_fire
+from c2sim.geometry import Vec3, segment_cpa
+from c2sim.guidance import LeadPursuitGuidance
+from c2sim.interception import EngagementPolicy, GreedyAssigner
 from c2sim.models import Command, CommandKind, Target, next_id
 from c2sim.sensors import SpotterPro
-from c2sim.threat import ThreatPolicy, assess
+from c2sim.strategies import (
+    GuidanceLaw,
+    ThreatModel,
+    Tracker,
+    WeaponTargetAssigner,
+)
+from c2sim.threat import ThreatPolicy, WeightedThreatModel
 from c2sim.weapons import HunterMax, LaunchPad, Phase, Thunder
 
 
@@ -89,10 +96,29 @@ class SimResult:
 class Engine:
     """Skyshield Nexus 指控仿真引擎。"""
 
-    def __init__(self, scenario: Scenario) -> None:
+    def __init__(
+        self,
+        scenario: Scenario,
+        *,
+        tracker: Tracker | None = None,
+        threat_model: ThreatModel | None = None,
+        assigner: WeaponTargetAssigner | None = None,
+        guidance: GuidanceLaw | None = None,
+    ) -> None:
         self.s = scenario
         self.rng = random.Random(scenario.seed)
-        self.fusion = TrackFusion(gate_distance=600.0, max_coast=6.0)
+        # 可替换策略(依赖倒置):默认即现有实现,可在组装处注入其它算法。
+        self.tracker: Tracker = tracker or TrackFusion(
+            gate_distance=600.0, max_coast=6.0
+        )
+        self.threat_model: ThreatModel = threat_model or WeightedThreatModel(
+            scenario.threat_policy
+        )
+        self.assigner: WeaponTargetAssigner = assigner or GreedyAssigner(
+            scenario.engagement_policy
+        )
+        self.guidance: GuidanceLaw = guidance or LeadPursuitGuidance()
+
         self.thunders: list[Thunder] = []
         self.engaged_counts: dict[str, int] = {}
         self.jammed_tracks: dict[str, str] = {}  # track_id → 被干扰的真实目标 id
@@ -132,7 +158,7 @@ class Engine:
             reports.extend(spotter.observe(s.targets, self.now, self.rng))
 
         # 6) 航迹融合。
-        tracks = self.fusion.update(reports, self.now)
+        tracks = self.tracker.update(reports, self.now)
         track_map = {t.track_id: t for t in tracks}
 
         # 已消失的航迹释放其交战/干扰占用。
@@ -144,7 +170,7 @@ class Engine:
                 del self.jammed_tracks[tid]
 
         # 7) 威胁研判。
-        assessments = assess(tracks, s.asset, s.threat_policy)
+        assessments = self.threat_model.assess(tracks, s.asset)
 
         # 8) 软杀伤决策:RF 辐射目标优先调度 Hunter Max 干扰(节省 Thunder)。
         skip = self._plan_jamming(assessments, track_map)
@@ -153,11 +179,10 @@ class Engine:
         self._guide(track_map)
 
         # 10) 拦截指令生成与发射(跳过已交由软杀伤处置的航迹)。
-        commands, new_thunders = plan_and_fire(
+        commands, new_thunders = self.assigner.plan(
             assessments,
             track_map,
             s.pads,
-            s.engagement_policy,
             self.now,
             self.engaged_counts,
             skip_tracks=skip,
@@ -198,11 +223,11 @@ class Engine:
             if victim is not None and victim.alive:
                 # 末段寻的:以(带导引头噪声的)真实目标为基准重解拦截矢量。
                 seen = self._seeker_fix(victim, itc.seeker_sigma)
-                t = lead_intercept_time(
-                    itc.position, seen, victim.velocity, itc.max_speed
+                sol = self.guidance.aim(
+                    itc.position, itc.max_speed, seen, victim.velocity
                 )
-                if t is not None:
-                    itc.steer_to(seen + victim.velocity * t, self.now + t)
+                if sol is not None:
+                    itc.steer_to(sol[0], self.now + sol[1])
                 # 近炸引信:本步内掠过杀伤半径即引爆。
                 rel_p = itc.position - victim.position
                 rel_v = itc.velocity - victim.velocity
@@ -273,12 +298,12 @@ class Engine:
             trk = track_map.get(itc.target_track_id)
             if not isinstance(trk, Track):
                 continue
-            t = lead_intercept_time(
-                itc.position, trk.position, trk.velocity, itc.max_speed
+            sol = self.guidance.aim(
+                itc.position, itc.max_speed, trk.position, trk.velocity
             )
-            if t is None:
+            if sol is None:
                 continue
-            itc.steer_to(trk.position + trk.velocity * t, self.now + t)
+            itc.steer_to(sol[0], self.now + sol[1])
 
     # -- 软杀伤(Hunter Max 干扰)-----------------------------------------
 

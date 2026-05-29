@@ -66,7 +66,7 @@ class TestEngine(unittest.TestCase):
         scenario = build_point_defense_scenario(seed=5)
         engine = Engine(scenario)
         engine.step()
-        for trk in engine.fusion.tracks.values():
+        for trk in engine.tracker.tracks.values():
             self.assertFalse(hasattr(trk, "truth_id"))
 
     def test_all_targets_accounted(self):
