@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.plot:
         from c2sim.viz import render_svg
 
-        render_svg(engine, args.plot, title=f"态势图 · {name}")
+        render_svg(scenario, engine.trace, args.plot, title=f"态势图 · {name}")
         print(f"态势图已写入: {args.plot}")
     return 0
 

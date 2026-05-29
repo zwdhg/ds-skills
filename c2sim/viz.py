@@ -4,8 +4,10 @@
 Hunter Max 干扰圈、各目标航迹(按结局着色)、Thunder 飞行轨迹,以及
 摧毁/软杀伤/突防事件标记。
 
-输入为运行结束的 :class:`c2sim.engine.Engine`(含 ``history`` 与 ``result``)。
-SVG 为纯文本矢量图,任意浏览器可直接查看,无需额外依赖。
+输入为想定(:class:`c2sim.engine.Scenario`)与运行记录
+(:class:`c2sim.engine.Trace`,含 ``history`` 与 ``result``)——只依赖这两个
+窄视图,不依赖整个 :class:`c2sim.engine.Engine`(接口隔离)。SVG 为纯文本
+矢量图,任意浏览器可直接查看,无需额外依赖。
 """
 
 from __future__ import annotations
@@ -59,12 +61,17 @@ class _Canvas:
         return wr * self.scale
 
 
-def render_svg(engine, path: str, title: str = "态势图", width: int = 920,
-               height: int = 920) -> str:
-    """渲染态势图并写入 ``path``,返回 SVG 文本。"""
-    s = engine.s
-    hist = engine.history
-    result = engine.result
+def render_svg(scenario, trace, path: str, title: str = "态势图",
+               width: int = 920, height: int = 920) -> str:
+    """渲染态势图并写入 ``path``,返回 SVG 文本。
+
+    参数:
+        scenario: 想定(要地/探测站/发射平台/干扰单元布局)。
+        trace: 运行记录(``trace.history`` 航迹、``trace.result`` 结果)。
+    """
+    s = scenario
+    hist = trace.history
+    result = trace.result
 
     # 收集用于确定视野范围的所有世界坐标点。
     pts: list[tuple[float, float]] = [(s.asset.x, s.asset.y)]

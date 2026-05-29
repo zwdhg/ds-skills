@@ -15,7 +15,7 @@ class TestViz(unittest.TestCase):
         engine.run()
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "map.svg")
-            svg = render_svg(engine, path, title="测试")
+            svg = render_svg(engine.s, engine.trace, path, title="测试")
             self.assertTrue(os.path.exists(path))
             self.assertTrue(svg.startswith("<svg"))
             self.assertIn("</svg>", svg)
