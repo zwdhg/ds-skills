@@ -3,23 +3,48 @@
     python -m c2sim.cli                       # 点状防护演示想定
     python -m c2sim.cli --scenario border     # 边境带状防护
     python -m c2sim.cli --events              # 打印逐条事件时间线
-    python -m c2sim.cli --seed 7
+    python -m c2sim.cli --plot out.svg        # 生成态势图
+    python -m c2sim.cli --scenario-file s.json   # 从 JSON 想定运行
+    python -m c2sim.cli --monte-carlo 50      # 蒙特卡洛 50 次,打印效能度量
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 
 from c2sim.engine import Engine, Scenario, SimResult
-from c2sim.scenarios import (
-    build_border_band_scenario,
-    build_point_defense_scenario,
-)
 
 _SCENARIOS = {
-    "point": ("核心要域点状防护", build_point_defense_scenario),
-    "border": ("边境线带状防护", build_border_band_scenario),
+    "point": "核心要域点状防护",
+    "border": "边境线带状防护",
 }
+
+
+def _named_builder(key: str):
+    from c2sim.scenarios import (
+        build_border_band_scenario,
+        build_point_defense_scenario,
+    )
+    return {
+        "point": build_point_defense_scenario,
+        "border": build_border_band_scenario,
+    }[key]
+
+
+def _file_builder(path: str):
+    """由 JSON 想定文件构造工厂:每次以指定种子重新解析,保证对象独立。"""
+    from c2sim.scenario_io import from_dict
+
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+
+    def build(seed: int) -> Scenario:
+        data = dict(raw)
+        data["seed"] = seed
+        return from_dict(data)
+
+    return build
 
 
 def _print_report(name: str, scenario: Scenario, result: SimResult, events: bool) -> None:
@@ -36,6 +61,8 @@ def _print_report(name: str, scenario: Scenario, result: SimResult, events: bool
     print("-" * 64)
     if result.destroyed:
         print("已摧毁: " + ", ".join(result.destroyed))
+    if result.soft_killed:
+        print("软杀伤(干扰迫降/返航): " + ", ".join(result.soft_killed))
     if result.leaked:
         print("突防(未拦截): " + ", ".join(result.leaked))
     if result.unresolved:
@@ -53,16 +80,39 @@ def _print_report(name: str, scenario: Scenario, result: SimResult, events: bool
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="演练指挥控制系统仿真(反无人机)")
     parser.add_argument(
-        "--scenario", choices=sorted(_SCENARIOS), default="point", help="部署样式"
+        "--scenario", choices=sorted(_SCENARIOS), default="point", help="内置部署样式"
     )
-    parser.add_argument("--seed", type=int, default=2026, help="随机种子")
+    parser.add_argument("--scenario-file", metavar="PATH", help="从 JSON 想定文件运行")
+    parser.add_argument("--seed", type=int, default=2026, help="随机种子(批量起始)")
     parser.add_argument("--events", action="store_true", help="打印逐条事件时间线")
+    parser.add_argument("--plot", metavar="PATH", help="生成态势 SVG 图并写入路径")
     parser.add_argument(
-        "--plot", metavar="PATH", help="生成态势 SVG 图并写入指定路径"
+        "--monte-carlo", type=int, metavar="N", default=0,
+        help="蒙特卡洛运行 N 次(种子 seed..seed+N-1)并打印效能度量",
     )
     args = parser.parse_args(argv)
 
-    name, builder = _SCENARIOS[args.scenario]
+    if args.scenario_file:
+        builder = _file_builder(args.scenario_file)
+        name = f"自定义想定({args.scenario_file})"
+    else:
+        builder = _named_builder(args.scenario)
+        name = _SCENARIOS[args.scenario]
+
+    # 蒙特卡洛模式。
+    if args.monte_carlo and args.monte_carlo > 1:
+        from c2sim.metrics import BatchMoe, run_batch
+
+        seeds = range(args.seed, args.seed + args.monte_carlo)
+        runs = run_batch(builder, seeds)
+        print("=" * 64)
+        print(f"  Skyshield Nexus · 效能度量(MOE) · 部署:{name}")
+        print("=" * 64)
+        print(BatchMoe.aggregate(runs).table())
+        print("=" * 64)
+        return 0
+
+    # 单次模式。
     scenario = builder(seed=args.seed)
     engine = Engine(scenario)
     result = engine.run()
