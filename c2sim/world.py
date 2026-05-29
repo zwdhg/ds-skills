@@ -60,6 +60,24 @@ class SelfDestruct:
     track_id: str
 
 
+def select_seeker_lock(
+    basket: list[Target], cue: Vec3 | None, fallback: Vec3
+) -> Target | None:
+    """从导引头视场(basket)内选定锁定目标。
+
+    * 有指控上行线索 ``cue``(所分配航迹的估计位置)时,锁定 basket 内**最接近
+      线索**的真实目标——即"被引导去打的那个";
+    * 线索丢失时,退化为自主锁定**最接近弹体**(``fallback``)的目标。
+
+    误关联是这一规则在密集/诱饵态势下的**自然涌现**:当邻近目标比预定目标更
+    接近线索时,导引头会锁错——无需人为概率。
+    """
+    if not basket:
+        return None
+    key_point = cue if cue is not None else fallback
+    return min(basket, key=lambda t: key_point.distance_to(t.position))
+
+
 class World:
     """仿真真值与物理引擎。"""
 
@@ -200,6 +218,13 @@ class World:
             if d < best_d:
                 best, best_d = tgt, d
         return best
+
+    def targets_within(self, point: Vec3, radius: float) -> list[Target]:
+        """弹载导引头视场:距 ``point`` ≤ ``radius`` 的存活目标(走空间索引)。"""
+        if self._grid is not None:
+            return [t for t in self._grid.query_radius(point, radius) if t.alive]
+        return [t for t in self.targets
+                if t.alive and point.distance_to(t.position) <= radius]
 
     def nearest_jammable(self, point: Vec3, jammer: HunterMax) -> Target | None:
         """干扰圈内、依赖 RF 链路的最近真实目标。"""

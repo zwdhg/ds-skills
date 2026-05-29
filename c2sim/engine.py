@@ -31,7 +31,7 @@ from c2sim.strategies import (
 )
 from c2sim.threat import ThreatPolicy, WeightedThreatModel
 from c2sim.weapons import HunterMax, LaunchPad, Phase, Thunder
-from c2sim.world import World
+from c2sim.world import World, select_seeker_lock
 
 
 @dataclass
@@ -240,19 +240,30 @@ class Engine:
                 itc.steer_to(sol[0], self.now + sol[1])
 
     def _guide_search(self, track_map: dict[str, object]) -> None:
-        """起飞抵近(指令制导)+ 目标搜索(按概率锁定真实目标)。"""
+        """起飞抵近(指令制导)+ 目标搜索/锁定(硬绑定 + 误关联)。
+
+        锁定遵循"指控上行航迹为线索":在导引头视场(``acquisition_range``)内,
+        锁定**最接近所分配航迹估计位置**的真实目标。稀疏时即预定目标;密集/
+        诱饵态势下,邻近目标可能更接近线索而被锁错——误关联由几何自然涌现。
+        航迹丢失时退化为自主就近锁定。
+        """
         from c2sim.models import Track
 
         for itc in self.world.thunders:
             if itc.detonated or not itc.alive:
                 continue
+            trk = track_map.get(itc.target_track_id)
+            trk = trk if isinstance(trk, Track) else None
+
             if not itc.acquired:
-                victim = self.world.nearest_alive_target(itc.position)
-                if (victim is not None
-                        and itc.position.distance_to(victim.position)
-                        <= itc.acquisition_range):
+                basket = self.world.targets_within(
+                    itc.position, itc.acquisition_range
+                )
+                if basket:
                     itc.phase = Phase.SEARCH
                     if self.rng.random() <= itc.acquisition_prob:
+                        cue = trk.position if trk is not None else None
+                        victim = select_seeker_lock(basket, cue, itc.position)
                         itc.acquired = True
                         itc.locked_target_id = victim.target_id
                         itc.phase = Phase.TERMINAL
@@ -260,8 +271,7 @@ class Engine:
                                   f"{itc.interceptor_id} 末段锁定 {victim.target_id}")
             if itc.acquired:
                 continue  # 末段由 _guide_terminal 接管
-            trk = track_map.get(itc.target_track_id)
-            if not isinstance(trk, Track):
+            if trk is None:
                 continue
             sol = self.guidance.aim(
                 itc.position, itc.max_speed, trk.position, trk.velocity
