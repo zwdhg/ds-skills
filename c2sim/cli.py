@@ -57,12 +57,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=2026, help="随机种子")
     parser.add_argument("--events", action="store_true", help="打印逐条事件时间线")
+    parser.add_argument(
+        "--plot", metavar="PATH", help="生成态势 SVG 图并写入指定路径"
+    )
     args = parser.parse_args(argv)
 
     name, builder = _SCENARIOS[args.scenario]
     scenario = builder(seed=args.seed)
-    result = Engine(scenario).run()
+    engine = Engine(scenario)
+    result = engine.run()
     _print_report(name, scenario, result, events=args.events)
+
+    if args.plot:
+        from c2sim.viz import render_svg
+
+        render_svg(engine, args.plot, title=f"态势图 · {name}")
+        print(f"态势图已写入: {args.plot}")
     return 0
 
 

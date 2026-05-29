@@ -30,6 +30,9 @@ class EngagementPolicy:
     """交战规则参数。"""
 
     engage_level: ThreatLevel = ThreatLevel.MEDIUM
+    prefer_jamming: bool = True  # RF 辐射目标优先软杀伤(干扰),节省 Thunder
+    # 拦截点须落在作业半径该比例以内才开火,避免贴边远射追不上高速目标。
+    engage_radius_frac: float = 0.8
     salvo_by_level: dict[ThreatLevel, int] = field(
         default_factory=lambda: {
             ThreatLevel.MEDIUM: 1,
@@ -49,22 +52,26 @@ class _Solution:
     flight_time: float
 
 
-def _solve(pad: LaunchPad, track: Track) -> _Solution | None:
-    """解算某发射平台对某航迹的拦截诸元;不可达返回 None。"""
+def _solve(pad: LaunchPad, track: Track, radius_frac: float) -> _Solution | None:
+    """解算某发射平台对某航迹的拦截诸元;不可达或贴边远射返回 None。"""
     t = lead_intercept_time(
         pad.position, track.position, track.velocity, pad.thunder_max_speed
     )
     if t is None:
         return None
     intercept_point = track.position + track.velocity * t
-    if not pad.can_reach(intercept_point):
+    if pad.inventory <= 0:
+        return None
+    if pad.position.distance_to(intercept_point) > pad.operating_radius * radius_frac:
         return None
     return _Solution(pad=pad, intercept_point=intercept_point, flight_time=t)
 
 
-def _best_pad(pads: list[LaunchPad], track: Track) -> _Solution | None:
+def _best_pad(
+    pads: list[LaunchPad], track: Track, radius_frac: float
+) -> _Solution | None:
     """在所有可达发射平台中择优:优先库存多,其次飞行时间短。"""
-    solutions = [s for p in pads if (s := _solve(p, track)) is not None]
+    solutions = [s for p in pads if (s := _solve(p, track, radius_frac)) is not None]
     if not solutions:
         return None
     solutions.sort(key=lambda s: (-s.pad.inventory, s.flight_time))
@@ -78,8 +85,9 @@ def plan_and_fire(
     policy: EngagementPolicy,
     now: float,
     engaged_counts: dict[str, int],
+    skip_tracks: set[str] | None = None,
 ) -> tuple[list[Command], list[Thunder]]:
-    """生成拦截指令并实施发射。
+    """生成拦截指令并实施发射(Thunder 硬杀伤)。
 
     参数:
         assessments: 已按威胁分降序排列的研判结果。
@@ -88,15 +96,19 @@ def plan_and_fire(
         policy: 交战规则。
         now: 当前仿真时间。
         engaged_counts: 各航迹已承诺的 Thunder 架数(跨帧累计),原地更新。
+        skip_tracks: 已由软杀伤(干扰)处置、不再用 Thunder 交战的航迹集合。
 
     返回:
         ``(commands, thunders)`` —— 本帧下发的指令与新发射的 Thunder。
     """
     commands: list[Command] = []
     thunders: list[Thunder] = []
+    skip = skip_tracks or set()
 
     for assessment in assessments:
         if assessment.level < policy.engage_level:
+            continue
+        if assessment.track_id in skip:
             continue
         track = tracks.get(assessment.track_id)
         if track is None:
@@ -109,7 +121,7 @@ def plan_and_fire(
             continue
 
         for _ in range(needed):
-            sol = _best_pad(pads, track)
+            sol = _best_pad(pads, track, policy.engage_radius_frac)
             if sol is None:
                 commands.append(
                     Command(

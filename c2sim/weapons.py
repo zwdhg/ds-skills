@@ -74,6 +74,24 @@ class Thunder:
 
 
 @dataclass
+class HunterMax:
+    """Hunter Max —— 固定式无线电干扰设备(软杀伤)。
+
+    对**辐射射频控制/导航信号**(即依赖 RF 链路)的无人机在干扰半径内实施
+    干扰,使其控制/导航链路中断;持续干扰 ``hold_time`` 秒后判定软杀伤
+    (迫降/返航)。对 RF 静默的自主目标(如 GPS 制导巡飞弹)无效。
+    """
+
+    jammer_id: str
+    position: Vec3
+    jam_range: float = 4_000.0   # 有效干扰半径(米)
+    hold_time: float = 5.0       # 持续干扰致软杀伤所需时长(秒)
+
+    def covers(self, point: Vec3) -> bool:
+        return self.position.distance_to(point) <= self.jam_range
+
+
+@dataclass
 class LaunchPad:
     """Thunder 发射平台。"""
 

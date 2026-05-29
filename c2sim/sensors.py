@@ -158,6 +158,7 @@ class SpotterPro:
                     timestamp=now,
                     position=noisy,
                     position_sigma=sigma,
+                    rf_emitter=t.target_id in cued,
                     truth_id=t.target_id,
                 )
             )
@@ -195,6 +196,7 @@ class SpotterPro:
                     position=noisy,
                     position_sigma=sigma,
                     classification=self._classify(t, rng),
+                    rf_emitter=t.target_id in cued,
                     truth_id=t.target_id,
                 )
             )

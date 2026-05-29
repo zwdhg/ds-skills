@@ -5,9 +5,10 @@
 规格,复现指挥控制核心处理链路:
 
 ```
-Spotter Pro 多模态探测 ──► 航迹融合 ──► 威胁研判 ──► 拦截指令生成 ──► Thunder 调度毁伤
-      sensors              fusion       threat      interception       weapons
-            └────────────────── Skyshield Nexus 指控闭环 ──────────────────┘
+                                                       ┌─► Thunder 硬杀伤
+Spotter Pro 多模态探测 ─► 航迹融合 ─► 威胁研判 ─► 拦截指令生成 ┤
+      sensors            fusion      threat     interception └─► Hunter Max 软杀伤
+            └───────────────── Skyshield Nexus 指控闭环 ─────────────────┘
 ```
 
 > ⚠️ **范围声明**:本项目是**软件仿真**。其中目标、传感器与 Thunder 截击机
@@ -22,8 +23,9 @@ Spotter Pro 多模态探测 ──► 航迹融合 ──► 威胁研判 ──
 | --- | --- | --- |
 | **Spotter Pro** | `sensors.py` | 多模态探测:频谱测向 + X 波段 AESA 雷达 + 光电,级联引导 |
 | **Skyshield Nexus** | `engine.py` | 指控中枢:航迹融合 + 威胁研判 + 拦截指令生成 + 调度 |
-| **Thunder** | `weapons.py` | AI 自主截击机:起飞抵近 → 目标搜索 → 末段拦截 |
+| **Thunder** | `weapons.py` | AI 自主截击机(硬杀伤):起飞抵近 → 目标搜索 → 末段拦截 |
 | **发射平台** | `weapons.py` | Thunder 存放/部署/发射,受作业半径约束 |
+| **Hunter Max** | `weapons.py` | 无线电干扰设备(软杀伤):对 RF 制式目标致迫降/返航 |
 
 ## 快速开始
 
@@ -39,10 +41,13 @@ python -m c2sim.cli --scenario border
 # 打印逐条事件时间线
 python -m c2sim.cli --events
 
+# 生成态势 SVG 图(无第三方依赖)
+python -m c2sim.cli --plot situation.svg
+
 # 指定随机种子复现
 python -m c2sim.cli --seed 7
 
-# 运行测试(52 项)
+# 运行测试(58 项)
 python -m unittest discover -s tests
 ```
 
@@ -54,8 +59,11 @@ python -m unittest discover -s tests
   部署样式:核心要域点状防护
 ================================================================
 探测站 1 | 发射平台 4 | 雷达覆盖合计 ≈ 78.5 km²
-用时 158.0s | 来袭目标 4 | 摧毁 4 | 突防 0 | 发射 Thunder 13 架
+用时 151.0s | 来袭目标 4 | 摧毁 1 | 软杀伤 3 | 突防 0 | 发射 Thunder 5 架
 ```
+
+> 上例体现软硬结合:3 个 RF 制式无人机由 Hunter Max **软杀伤**(迫降/返航),
+> RF 静默的巡飞弹由 Thunder **硬杀伤**——仅消耗 5 架 Thunder 即零突防。
 
 ## 处理链路要点
 
@@ -66,7 +74,8 @@ python -m unittest discover -s tests
 | 威胁研判 | `threat.py` | 企图(CPA)+ 紧迫(抵达时间)+ 逼近 + 杀伤(优先采用光电识别类型)四因子合成威胁分与等级。 |
 | 拦截指令 | `interception.py` | 火力-目标分配:按威胁排序,结合各发射平台**作业半径/库存**优选最优单元,解算预测拦截点,下发 ENGAGE/HOLD。 |
 | Thunder | `weapons.py` | 三阶段:起飞抵近(指令制导)→ 目标搜索(弹载截获)→ 末段拦截(图像寻的,近炸引信)。作业半径约束 + 末段余度。 |
-| 引擎 | `engine.py` | 时间步进、真值/毁伤判定、突防判定。 |
+| Hunter Max | `weapons.py` | 软杀伤:对 RF 制式目标在干扰圈内致链路中断,持续达阈值判迫降/返航;RF 静默目标免疫。 |
+| 引擎 | `engine.py` | 时间步进、软/硬杀伤决策、真值/毁伤判定、突防判定。 |
 
 ### 关键设计
 
@@ -80,6 +89,26 @@ python -m unittest discover -s tests
   截获线索**;RF 静默(自主)目标(如巡飞弹)只能靠雷达/光电处置,更难。
 - **Thunder 末段图像寻的**:末段以弹载传感器锁定真实目标精确寻的,这解释了
   规格中 ≥90% 的单发拦截成功率。
+- **软硬结合**:Skyshield Nexus 对 RF 制式目标优先调度 Hunter Max 软杀伤
+  (节省 Thunder),对 RF 静默/抗扰目标用 Thunder 硬杀伤——对应参考资料
+  "侦测—识别—干扰"一体化防控体系。
+
+## 态势可视化
+
+`python -m c2sim.cli --plot out.svg` 生成俯视 SVG 态势图(纯文本矢量,浏览器
+可直接查看,**无第三方依赖**):安全穹顶、Spotter Pro 覆盖扇区、发射平台
+作业半径、Hunter Max 干扰圈、目标航迹(按结局着色:红=摧毁/青=软杀伤/
+深红=突防)、Thunder 轨迹及事件标记。亦可在代码中调用:
+
+```python
+from c2sim.engine import Engine
+from c2sim.scenarios import build_point_defense_scenario
+from c2sim.viz import render_svg
+
+engine = Engine(build_point_defense_scenario())
+engine.run()
+render_svg(engine, "situation.svg", title="态势图")
+```
 
 ## 典型部署
 
@@ -122,12 +151,13 @@ c2sim/
   sensors.py       Spotter Pro 多模态探测
   fusion.py        航迹融合
   threat.py        威胁研判
-  interception.py  拦截指令生成(火力-目标分配)
-  weapons.py       Thunder 截击机与发射平台
+  interception.py  拦截指令生成(火力-目标分配,软/硬杀伤决策)
+  weapons.py       Thunder 截击机、发射平台、Hunter Max 干扰设备
   engine.py        Skyshield Nexus 仿真引擎
+  viz.py           态势 SVG 可视化(无依赖)
   scenarios.py     点状/带状两种部署想定
   cli.py           命令行入口
 docs/
   reference-system.md  参考系统规格摘要
-tests/             unittest 测试(52 项)
+tests/             unittest 测试(58 项)
 ```

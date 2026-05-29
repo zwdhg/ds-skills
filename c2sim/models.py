@@ -84,7 +84,9 @@ class Target:
     rcs: float = 0.1                    # 雷达散射截面(平方米)
     terminal_speed: float | None = None  # 末段突击速度(None 表示不加速)
     terminal_range: float = 1500.0      # 切入末段的距要地距离(米)
-    emits_rf: bool = True               # 是否辐射可被频谱测向截获的信号
+    emits_rf: bool = True               # 是否辐射可被频谱测向截获/可被干扰的信号
+    jammed: bool = False                # 是否处于被干扰(链路中断)状态
+    jam_elapsed: float = 0.0            # 持续被干扰时长(秒)
     alive: bool = True
 
     def current_speed(self) -> float:
@@ -97,6 +99,9 @@ class Target:
 
     @property
     def velocity(self) -> Vec3:
+        # 被干扰(控制/导航链路中断)→ 失去寻的能力,原地悬停/失速。
+        if self.jammed:
+            return Vec3()
         return (self.aim - self.position).unit() * self.current_speed()
 
     def advance(self, dt: float) -> None:
@@ -123,6 +128,7 @@ class SensorReport:
     position: Vec3          # 量测位置(RF 模态为粗略定向折算点)
     position_sigma: float   # 等效一倍标准差(米),用于融合加权与波门
     classification: TargetKind | None = None  # 光电识别结果
+    rf_emitter: bool = False  # 该目标本帧被频谱测向截获(辐射 RF,可被干扰)
     truth_id: str | None = None
 
 
@@ -137,6 +143,7 @@ class Track:
     contributing_sensors: set[str] = field(default_factory=set)
     modalities: set[SensorModality] = field(default_factory=set)
     classification: TargetKind | None = None  # 光电确认的类型
+    rf_emitter: bool = False  # 是否为 RF 辐射源(可实施干扰软杀伤)
     hits: int = 0
     coast_time: float = 0.0
 
@@ -166,21 +173,23 @@ class ThreatAssessment:
 
 
 class CommandKind(enum.Enum):
-    ENGAGE = "engage"  # 交战:调度发射 Thunder
+    ENGAGE = "engage"  # 硬杀伤:调度发射 Thunder
+    JAM = "jam"        # 软杀伤:调度 Hunter Max 实施无线电干扰
     HOLD = "hold"      # 暂不交战(无可用拦截资源/超出作业半径等)
 
 
 @dataclass
 class Command:
-    """Skyshield Nexus 下发给某发射平台的拦截指令。"""
+    """Skyshield Nexus 下发给发射平台 / Hunter Max 的拦截指令。"""
 
     command_id: str
     kind: CommandKind
     timestamp: float
     track_id: str | None
-    pad_id: str | None             # 受令发射平台
-    intercept_point: Vec3 | None   # 预测拦截点
-    intercept_time: float | None   # 预计命中时刻(绝对仿真时间)
+    pad_id: str | None = None      # 受令发射平台(ENGAGE)
+    jammer_id: str | None = None   # 受令干扰单元(JAM)
+    intercept_point: Vec3 | None = None
+    intercept_time: float | None = None
     note: str = ""
 
 

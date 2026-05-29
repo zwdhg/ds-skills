@@ -20,10 +20,10 @@ from dataclasses import dataclass, field
 from c2sim.fusion import TrackFusion
 from c2sim.geometry import Vec3, lead_intercept_time, segment_cpa
 from c2sim.interception import EngagementPolicy, plan_and_fire
-from c2sim.models import Command, Target
+from c2sim.models import Command, CommandKind, Target, next_id
 from c2sim.sensors import SpotterPro
 from c2sim.threat import ThreatPolicy, assess
-from c2sim.weapons import LaunchPad, Phase, Thunder
+from c2sim.weapons import HunterMax, LaunchPad, Phase, Thunder
 
 
 @dataclass
@@ -34,6 +34,7 @@ class Scenario:
     targets: list[Target]
     spotters: list[SpotterPro]
     pads: list[LaunchPad]
+    jammers: list[HunterMax] = field(default_factory=list)  # Hunter Max 干扰单元
     dt: float = 0.5                   # 仿真步长(秒)
     max_time: float = 600.0           # 最长仿真时长(秒)
     seed: int = 1234
@@ -52,10 +53,21 @@ class Event:
 
 
 @dataclass
+class History:
+    """轻量航迹历史,供态势可视化。"""
+
+    target_paths: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
+    thunder_paths: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
+    # 事件标记:(x, y, kind),kind ∈ {摧毁, 软杀伤, 突防}
+    markers: list[tuple[float, float, str]] = field(default_factory=list)
+
+
+@dataclass
 class SimResult:
     """一次仿真的结果汇总。"""
 
-    destroyed: list[str] = field(default_factory=list)
+    destroyed: list[str] = field(default_factory=list)      # Thunder 硬杀伤
+    soft_killed: list[str] = field(default_factory=list)    # Hunter Max 软杀伤
     leaked: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     total_targets: int = 0
@@ -65,10 +77,11 @@ class SimResult:
     duration: float = 0.0
 
     def summary(self) -> str:
+        soft = f" | 软杀伤 {len(self.soft_killed)}" if self.soft_killed else ""
         tail = f" | 在途未决 {len(self.unresolved)}" if self.unresolved else ""
         return (
             f"用时 {self.duration:.1f}s | 来袭目标 {self.total_targets} | "
-            f"摧毁 {len(self.destroyed)} | 突防 {len(self.leaked)}{tail} | "
+            f"摧毁 {len(self.destroyed)}{soft} | 突防 {len(self.leaked)}{tail} | "
             f"发射 Thunder {self.thunders_launched} 架"
         )
 
@@ -82,8 +95,11 @@ class Engine:
         self.fusion = TrackFusion(gate_distance=600.0, max_coast=6.0)
         self.thunders: list[Thunder] = []
         self.engaged_counts: dict[str, int] = {}
+        self.jammed_tracks: dict[str, str] = {}  # track_id → 被干扰的真实目标 id
         self.now = 0.0
         self.result = SimResult(total_targets=len(scenario.targets))
+        # 轻量航迹历史(供可视化):各目标/Thunder 的 (t, x, y) 序列与事件标记。
+        self.history = History()
 
     # -- 单步 -------------------------------------------------------------
 
@@ -93,7 +109,7 @@ class Engine:
         step_start = self.now
         self.now += dt
 
-        # 1) 推进真值。
+        # 1) 推进真值(被干扰目标悬停不前)。
         for tgt in s.targets:
             if tgt.alive:
                 tgt.advance(dt)
@@ -101,33 +117,42 @@ class Engine:
         for itc in self.thunders:
             self._fly(itc, dt)
 
-        # 2) 处理引爆与毁伤。
+        # 2) 软杀伤推进:持续干扰达阈值则判定迫降/返航。
+        self._resolve_jamming(dt)
+
+        # 3) 处理引爆与毁伤。
         self._resolve_detonations()
 
-        # 3) 突防判定。
+        # 4) 突防判定。
         self._check_leaks()
 
-        # 4) Spotter Pro 多模态探测。
+        # 5) Spotter Pro 多模态探测。
         reports = []
         for spotter in s.spotters:
             reports.extend(spotter.observe(s.targets, self.now, self.rng))
 
-        # 5) 航迹融合。
+        # 6) 航迹融合。
         tracks = self.fusion.update(reports, self.now)
         track_map = {t.track_id: t for t in tracks}
 
-        # 已消失的航迹释放其交战占用,允许对存活目标重新交战。
+        # 已消失的航迹释放其交战/干扰占用。
         for tid in list(self.engaged_counts):
             if tid not in track_map:
                 del self.engaged_counts[tid]
+        for tid in list(self.jammed_tracks):
+            if tid not in track_map:
+                del self.jammed_tracks[tid]
 
-        # 6) 威胁研判。
+        # 7) 威胁研判。
         assessments = assess(tracks, s.asset, s.threat_policy)
 
-        # 7) Thunder 分阶段制导。
+        # 8) 软杀伤决策:RF 辐射目标优先调度 Hunter Max 干扰(节省 Thunder)。
+        skip = self._plan_jamming(assessments, track_map)
+
+        # 9) Thunder 分阶段制导。
         self._guide(track_map)
 
-        # 8) 拦截指令生成与发射。
+        # 10) 拦截指令生成与发射(跳过已交由软杀伤处置的航迹)。
         commands, new_thunders = plan_and_fire(
             assessments,
             track_map,
@@ -135,6 +160,7 @@ class Engine:
             s.engagement_policy,
             self.now,
             self.engaged_counts,
+            skip_tracks=skip,
         )
         for cmd in commands:
             self.result.commands.append(cmd)
@@ -142,6 +168,9 @@ class Engine:
                 self._log("交战", cmd.note)
         self.thunders.extend(new_thunders)
         self.result.thunders_launched += len(new_thunders)
+
+        # 11) 记录航迹历史(可视化)。
+        self._record_history()
 
     # -- Thunder 飞行 -----------------------------------------------------
 
@@ -251,6 +280,100 @@ class Engine:
                 continue
             itc.steer_to(trk.position + trk.velocity * t, self.now + t)
 
+    # -- 软杀伤(Hunter Max 干扰)-----------------------------------------
+
+    def _plan_jamming(
+        self, assessments: list, track_map: dict[str, "object"]
+    ) -> set[str]:
+        """对 RF 辐射、且落入某 Hunter Max 干扰圈的威胁航迹调度软杀伤。
+
+        返回交由软杀伤处置、本帧不再用 Thunder 交战的航迹集合。
+        """
+        s = self.s
+        skip: set[str] = set(self.jammed_tracks)
+        if not s.jammers or not s.engagement_policy.prefer_jamming:
+            return skip
+
+        for a in assessments:
+            if a.level < s.engagement_policy.engage_level:
+                continue
+            if a.track_id in self.jammed_tracks:
+                continue
+            trk = track_map.get(a.track_id)
+            if trk is None or not getattr(trk, "rf_emitter", False):
+                continue
+            jammer = next((j for j in s.jammers if j.covers(trk.position)), None)
+            if jammer is None:
+                continue
+            # 在干扰圈内、依赖 RF 链路的最近真实目标进入被干扰状态。
+            victim = self._nearest_jammable(trk.position, jammer)
+            if victim is None:
+                continue
+            victim.jammed = True
+            self.jammed_tracks[a.track_id] = victim.target_id
+            skip.add(a.track_id)
+            self.result.commands.append(
+                Command(
+                    command_id=next_id("CMD"),
+                    kind=CommandKind.JAM,
+                    timestamp=self.now,
+                    track_id=a.track_id,
+                    jammer_id=jammer.jammer_id,
+                    note=f"{a.level.label}威胁(RF 辐射)→ {jammer.jammer_id} 实施干扰软杀伤",
+                )
+            )
+            self._log("干扰", f"{jammer.jammer_id} 干扰 {victim.target_id}")
+        return skip
+
+    def _nearest_jammable(self, point: Vec3, jammer: HunterMax) -> Target | None:
+        best, best_d = None, float("inf")
+        for t in self.s.targets:
+            if not t.alive or not t.emits_rf or not jammer.covers(t.position):
+                continue
+            d = point.distance_to(t.position)
+            if d < best_d:
+                best, best_d = t, d
+        return best
+
+    def _resolve_jamming(self, dt: float) -> None:
+        """累计被干扰时长;达阈值判定软杀伤(迫降/返航)。
+
+        若目标脱离所有干扰圈则解除干扰(恢复寻的)。
+        """
+        s = self.s
+        for tgt in s.targets:
+            if not tgt.alive or not tgt.jammed:
+                continue
+            still = any(j.covers(tgt.position) for j in s.jammers)
+            if not still:
+                tgt.jammed = False
+                tgt.jam_elapsed = 0.0
+                continue
+            tgt.jam_elapsed += dt
+            hold = min((j.hold_time for j in s.jammers if j.covers(tgt.position)),
+                       default=5.0)
+            if tgt.jam_elapsed >= hold:
+                tgt.alive = False
+                self.result.soft_killed.append(tgt.target_id)
+                self.history.markers.append(
+                    (tgt.position.x, tgt.position.y, "软杀伤")
+                )
+                self._log("软杀伤", f"{tgt.target_id} 链路中断,迫降/返航")
+
+    # -- 历史记录 ---------------------------------------------------------
+
+    def _record_history(self) -> None:
+        for tgt in self.s.targets:
+            if tgt.alive:
+                self.history.target_paths.setdefault(tgt.target_id, []).append(
+                    (tgt.position.x, tgt.position.y)
+                )
+        for itc in self.thunders:
+            if itc.alive:
+                self.history.thunder_paths.setdefault(
+                    itc.interceptor_id, []
+                ).append((itc.position.x, itc.position.y))
+
     # -- 子过程 -----------------------------------------------------------
 
     def _resolve_detonations(self) -> None:
@@ -271,6 +394,9 @@ class Engine:
             if miss <= itc.lethal_radius and self.rng.random() <= s.single_shot_pk:
                 victim.alive = False
                 self.result.destroyed.append(victim.target_id)
+                self.history.markers.append(
+                    (victim.position.x, victim.position.y, "摧毁")
+                )
                 self._log(
                     "摧毁",
                     f"{itc.interceptor_id} 摧毁 {victim.target_id} "
@@ -293,6 +419,9 @@ class Engine:
             if tgt.alive and tgt.position.distance_to(s.asset) <= r:
                 tgt.alive = False
                 self.result.leaked.append(tgt.target_id)
+                self.history.markers.append(
+                    (tgt.position.x, tgt.position.y, "突防")
+                )
                 self._log("突防", f"{tgt.target_id} 突入安全穹顶")
 
     def _nearest_alive_target(self, point: Vec3) -> Target | None:

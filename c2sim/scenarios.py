@@ -15,7 +15,7 @@ from c2sim.engine import Scenario
 from c2sim.geometry import Vec3
 from c2sim.models import Target, TargetKind
 from c2sim.sensors import SpotterPro
-from c2sim.weapons import LaunchPad
+from c2sim.weapons import HunterMax, LaunchPad
 
 
 def _inbound(
@@ -66,6 +66,14 @@ def build_point_defense_scenario(seed: int = 2026) -> Scenario:
         LaunchPad("PAD-SE", _polar(0, 0, 315, 3_000, 15)),
     ]
 
+    # Hunter Max 干扰单元前置部署,对 RF 辐射目标实施软杀伤(节省 Thunder);
+    # 干扰圈外推至 ~7.5km,使 RF 制式目标在突入穹顶前即被迫降/返航。
+    jammers = [
+        HunterMax("HM-E", _polar(0, 0, 0, 3_500, 15), jam_range=4_000.0),
+        HunterMax("HM-SW", _polar(0, 0, 215, 3_500, 15), jam_range=4_000.0),
+        HunterMax("HM-SE", _polar(0, 0, 315, 3_500, 15), jam_range=4_000.0),
+    ]
+
     targets = [
         # 固定翼无人机,正东来袭(辐射图传信号,可被频谱测向预警)。
         _inbound(
@@ -108,7 +116,8 @@ def build_point_defense_scenario(seed: int = 2026) -> Scenario:
     ]
 
     return Scenario(
-        asset=asset, targets=targets, spotters=spotters, pads=pads, seed=seed
+        asset=asset, targets=targets, spotters=spotters, pads=pads,
+        jammers=jammers, seed=seed,
     )
 
 
@@ -164,8 +173,13 @@ def build_border_band_scenario(seed: int = 2026) -> Scenario:
         ),
     ]
 
+    jammers = [
+        HunterMax("HM-C", Vec3(-500.0, 0.0, 15.0), jam_range=4_500.0),
+    ]
+
     return Scenario(
-        asset=asset, targets=targets, spotters=spotters, pads=pads, seed=seed
+        asset=asset, targets=targets, spotters=spotters, pads=pads,
+        jammers=jammers, seed=seed,
     )
 
 

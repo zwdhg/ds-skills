@@ -29,6 +29,7 @@ class _FusedMeasurement:
     sensors: set[str]
     modalities: set = field(default_factory=set)
     classification: object | None = None
+    rf_emitter: bool = False
 
 
 def fuse_reports(
@@ -79,6 +80,7 @@ def _inverse_variance_fuse(reports: list[SensorReport]) -> _FusedMeasurement:
         sensors={r.sensor_id for r in reports},
         modalities={r.modality for r in reports},
         classification=classification,
+        rf_emitter=any(r.rf_emitter for r in reports),
     )
 
 
@@ -164,6 +166,8 @@ class TrackFusion:
         trk.modalities = set(m.modalities)
         if m.classification is not None:
             trk.classification = m.classification
+        if m.rf_emitter:
+            trk.rf_emitter = True
 
     def _spawn_track(self, m: _FusedMeasurement, now: float) -> None:
         """由一个无主量测起始新航迹(初始速度未知,置零)。"""
@@ -176,6 +180,7 @@ class TrackFusion:
             contributing_sensors=set(m.sensors),
             modalities=set(m.modalities),
             classification=m.classification,
+            rf_emitter=m.rf_emitter,
             hits=1,
             coast_time=0.0,
         )

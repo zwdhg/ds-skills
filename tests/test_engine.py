@@ -73,14 +73,27 @@ class TestEngine(unittest.TestCase):
         scenario = build_point_defense_scenario(seed=2026)
         result = Engine(scenario).run()
         accounted = (
-            len(result.destroyed) + len(result.leaked) + len(result.unresolved)
+            len(result.destroyed)
+            + len(result.soft_killed)
+            + len(result.leaked)
+            + len(result.unresolved)
         )
         self.assertEqual(accounted, result.total_targets)
 
-    def test_point_defense_intercepts_majority(self):
+    def test_point_defense_neutralizes_all(self):
+        # 软杀伤(干扰)+ 硬杀伤(Thunder)协同,应零突防处置全部目标。
         scenario = build_point_defense_scenario(seed=2026)
         result = Engine(scenario).run()
-        self.assertGreaterEqual(len(result.destroyed), 3)
+        neutralized = len(result.destroyed) + len(result.soft_killed)
+        self.assertGreaterEqual(neutralized, 4)
+        self.assertEqual(len(result.leaked), 0)
+
+    def test_rf_silent_loiter_hard_killed(self):
+        # RF 静默巡飞弹不可干扰,必须由 Thunder 硬杀伤。
+        scenario = build_point_defense_scenario(seed=2026)
+        result = Engine(scenario).run()
+        self.assertIn("T2-LOITER", result.destroyed)
+        self.assertNotIn("T2-LOITER", result.soft_killed)
 
     def test_border_band_intercepts_all(self):
         scenario = build_border_band_scenario(seed=2026)
