@@ -145,6 +145,7 @@ class Track:
     modalities: set[SensorModality] = field(default_factory=set)
     classification: TargetKind | None = None  # 光电确认的类型
     rf_emitter: bool = False  # 是否为 RF 辐射源(可实施干扰软杀伤)
+    confirmed: bool = True    # 是否已确认(M-of-N 起批);未确认不进入研判/交战
     hits: int = 0
     coast_time: float = 0.0
 

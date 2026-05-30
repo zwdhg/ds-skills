@@ -185,7 +185,9 @@ class Engine:
         reports = []
         for spotter in s.spotters:
             reports.extend(spotter.observe(self.world.targets, self.now, self.rng))
-        tracks = self.tracker.update(reports, self.now)
+        # 仅**已确认**航迹进入指控画面(研判/干扰/制导/分配);未确认(如杂波
+        # 激起的暂定航迹)不参与决策,避免污染态势与浪费拦截资源。
+        tracks = [t for t in self.tracker.update(reports, self.now) if t.confirmed]
         track_map = {t.track_id: t for t in tracks}
 
         # 已消失的航迹释放其交战占用。

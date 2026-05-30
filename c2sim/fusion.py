@@ -100,12 +100,14 @@ class TrackFusion:
         alpha: float = 0.6,
         beta: float = 0.2,
         max_coast: float = 8.0,
+        confirm_threshold: int = 1,
         ids=None,
     ) -> None:
         self.gate_distance = gate_distance
         self.alpha = alpha
         self.beta = beta
         self.max_coast = max_coast
+        self.confirm_threshold = confirm_threshold
         self._mint = ids.next if ids is not None else next_id
         self.tracks: dict[str, Track] = {}
 
@@ -165,6 +167,8 @@ class TrackFusion:
         trk.last_update = now
         trk.coast_time = 0.0
         trk.hits += 1
+        if trk.hits >= self.confirm_threshold:
+            trk.confirmed = True  # 确认后latch,不再回退
         trk.contributing_sensors = set(m.sensors)
         trk.modalities = set(m.modalities)
         if m.classification is not None:
@@ -184,6 +188,7 @@ class TrackFusion:
             modalities=set(m.modalities),
             classification=m.classification,
             rf_emitter=m.rf_emitter,
+            confirmed=self.confirm_threshold <= 1,
             hits=1,
             coast_time=0.0,
         )

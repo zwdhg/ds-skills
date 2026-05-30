@@ -81,6 +81,7 @@ class CovarianceTracker:
         beta: float = 0.3,
         process_var: float = 400.0,   # 每秒各轴过程噪声方差(机动不确定性)
         max_coast: float = 6.0,
+        confirm_threshold: int = 1,
         ids=None,
     ) -> None:
         self.gate_distance = gate_distance
@@ -88,6 +89,7 @@ class CovarianceTracker:
         self.beta = beta
         self.process_var = process_var
         self.max_coast = max_coast
+        self.confirm_threshold = confirm_threshold
         from c2sim.models import next_id
         self._mint = ids.next if ids is not None else next_id
         self.tracks: dict[str, Track] = {}
@@ -160,6 +162,8 @@ class CovarianceTracker:
         trk.last_update = now
         trk.coast_time = 0.0
         trk.hits += 1
+        if trk.hits >= self.confirm_threshold:
+            trk.confirmed = True
         trk.contributing_sensors = set(m.sensors)
         trk.modalities = set(m.modalities)
         if m.classification is not None:
@@ -173,6 +177,6 @@ class CovarianceTracker:
             track_id=tid, position=m.position, velocity=Vec3(), last_update=now,
             contributing_sensors=set(m.sensors), modalities=set(m.modalities),
             classification=m.classification, rf_emitter=m.rf_emitter,
-            hits=1, coast_time=0.0,
+            confirmed=self.confirm_threshold <= 1, hits=1, coast_time=0.0,
         )
         self._var[tid] = m.var
