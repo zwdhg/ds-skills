@@ -174,7 +174,7 @@ def from_dict(data: dict) -> Scenario:
         kwargs["threat_policy"] = _threat_policy(data["threat_policy"])
     if "engagement_policy" in data:
         kwargs["engagement_policy"] = _engagement_policy(data["engagement_policy"])
-    for k in ("dt", "max_time", "seed", "single_shot_pk"):
+    for k in ("dt", "max_time", "seed", "warhead_reliability"):
         if k in data:
             kwargs[k] = data[k]
 
@@ -202,7 +202,7 @@ def to_dict(scenario: Scenario) -> dict:
         "dt": scenario.dt,
         "max_time": scenario.max_time,
         "seed": scenario.seed,
-        "single_shot_pk": scenario.single_shot_pk,
+        "warhead_reliability": scenario.warhead_reliability,
         "spotters": [
             {"station_id": s.station_id, "position": v(s.position),
              "azimuth_center_deg": s.azimuth_center_deg,

@@ -98,6 +98,10 @@ def main(argv: list[str] | None = None) -> int:
         "--monte-carlo", type=int, metavar="N", default=0,
         help="蒙特卡洛运行 N 次(种子 seed..seed+N-1)并打印效能度量",
     )
+    parser.add_argument(
+        "--sensitivity", type=int, metavar="N", default=0,
+        help="参数敏感性扫描(每点 N 次蒙特卡洛),打印各参数对突防率的摆幅",
+    )
     args = parser.parse_args(argv)
 
     if args.scenario_file:
@@ -106,6 +110,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         builder = _named_builder(args.scenario)
         name = _SCENARIOS[args.scenario]
+
+    # 参数敏感性模式。
+    if args.sensitivity and args.sensitivity > 1:
+        from c2sim.sensitivity import default_sweep, format_sweep
+
+        seeds = range(args.seed, args.seed + args.sensitivity)
+        print("=" * 64)
+        print(f"  Skyshield Nexus · 参数敏感性 · 部署:{name}")
+        print("=" * 64)
+        print(format_sweep(default_sweep(builder, seeds)))
+        print("=" * 64)
+        return 0
 
     # 蒙特卡洛模式。
     if args.monte_carlo and args.monte_carlo > 1:

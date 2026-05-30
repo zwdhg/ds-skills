@@ -7,7 +7,7 @@
   "dt": 0.5,
   "max_time": 600.0,
   "seed": 2026,
-  "single_shot_pk": 0.92,
+  "warhead_reliability": 0.95,
   "spotters": [
     {
       "station_id": "SPT-0",

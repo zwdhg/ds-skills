@@ -13,12 +13,28 @@
 from __future__ import annotations
 
 import random
+import math
 from dataclasses import dataclass
 
 from c2sim.geometry import Vec3, segment_cpa, turn_towards
 from c2sim.models import Target
 from c2sim.spatial import SpatialGrid
 from c2sim.weapons import HunterMax, Thunder
+
+_LN2 = math.log(2.0)
+
+
+def kill_probability(miss: float, lethal_radius: float, reliability: float) -> float:
+    """战斗部毁伤函数:由脱靶量给出毁伤概率(高斯型,Carleton 损伤律)。
+
+    ``Pk = reliability · exp(-ln2·(miss/lethal_radius)²)`` —— 脱靶量为 0 时取
+    ``reliability``(引信/战斗部可靠性,诚实的输入参数),脱靶到杀伤半径时降至
+    其一半。**实现的单发杀伤概率由脱靶量分布(导引头误差+制导滞后+步长)经此
+    函数涌现,而非硬设常数**,从而拆除"设 Pk 去匹配规格、再验证规格"的循环。
+    """
+    if lethal_radius <= 0.0:
+        return 0.0
+    return reliability * math.exp(-_LN2 * (miss / lethal_radius) ** 2)
 
 
 # --- 结果事件(World → 编排者)-------------------------------------------
@@ -98,14 +114,14 @@ class World:
         jammers: list[HunterMax],
         asset: Vec3,
         defended_radius: float,
-        single_shot_pk: float,
+        warhead_reliability: float,
         rng: random.Random,
     ) -> None:
         self.targets = targets
         self.jammers = jammers
         self.asset = asset
         self.defended_radius = defended_radius
-        self.single_shot_pk = single_shot_pk
+        self.warhead_reliability = warhead_reliability
         self.rng = rng
         self.thunders: list[Thunder] = []
         self._by_id = {t.target_id: t for t in targets}  # O(1) 身份查找
@@ -164,8 +180,11 @@ class World:
                 events.append(Miss(itc.interceptor_id, itc.target_track_id, None,
                                    itc.miss_distance))
                 continue
-            if (itc.miss_distance <= itc.lethal_radius
-                    and self.rng.random() <= self.single_shot_pk):
+            # 毁伤概率由**脱靶量经战斗部毁伤函数**得出(而非硬设常数):
+            # 引信已在 ≤lethal_radius 处触发,此处按 miss 决定是否毁伤。
+            pk = kill_probability(itc.miss_distance, itc.lethal_radius,
+                                  self.warhead_reliability)
+            if self.rng.random() <= pk:
                 victim.alive = False
                 events.append(Kill(itc.interceptor_id, itc.target_track_id,
                                    victim.target_id, itc.miss_distance))

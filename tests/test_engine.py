@@ -25,7 +25,7 @@ def _inbound(tid, start, aim, speed, kind=TargetKind.FIXED_WING_UAV, rcs=0.15):
 
 
 class TestEngine(unittest.TestCase):
-    def test_single_inbound_destroyed(self):
+    def _single_inbound_result(self, seed):
         asset = Vec3(0, 0, 0)
         tgt = _inbound("INB", Vec3(7_000, 0, 500), asset, 45.0)
         scenario = Scenario(
@@ -33,12 +33,17 @@ class TestEngine(unittest.TestCase):
             targets=[tgt],
             spotters=[SpotterPro("S", Vec3(0, 0, 20))],
             pads=[LaunchPad("P", Vec3(2_500, 0, 15))],
-            seed=1,
+            seed=seed,
         )
-        result = Engine(scenario).run()
-        self.assertIn("INB", result.destroyed)
-        self.assertNotIn("INB", result.leaked)
-        self.assertGreater(result.thunders_launched, 0)
+        return Engine(scenario).run()
+
+    def test_single_inbound_reliably_destroyed(self):
+        # 单目标单平台:实现 Pk 由脱靶量涌现(非硬设),多发再交战下应**绝大多数**
+        # 种子摧毁(统计断言,避免钉死单一种子)。
+        destroyed = sum("INB" in self._single_inbound_result(s).destroyed
+                        for s in range(10))
+        self.assertGreaterEqual(destroyed, 8)
+        self.assertGreater(self._single_inbound_result(0).thunders_launched, 0)
 
     def test_leak_when_no_defense(self):
         tgt = _inbound("LEAK", Vec3(6_000, 0, 300), Vec3(0, 0, 0), 50.0)

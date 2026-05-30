@@ -48,7 +48,8 @@ class Scenario:
     seed: int = 1234
     threat_policy: ThreatPolicy = field(default_factory=ThreatPolicy)
     engagement_policy: EngagementPolicy = field(default_factory=EngagementPolicy)
-    single_shot_pk: float = 0.92      # 单架 Thunder 命中波门内时的毁伤概率
+    warhead_reliability: float = 0.95  # 引信/战斗部可靠性(脱靶=0 时的毁伤上限);
+    #                                    实现 Pk 由脱靶量经毁伤函数涌现,非硬设
 
 
 @dataclass
@@ -129,7 +130,7 @@ class Engine:
             jammers=scenario.jammers,
             asset=scenario.asset,
             defended_radius=scenario.threat_policy.defended_radius,
-            single_shot_pk=scenario.single_shot_pk,
+            warhead_reliability=scenario.warhead_reliability,
             rng=self.rng,
         )
         self.ids = IdGenerator()  # 本引擎独立的 ID 生成器(避免全局可变状态)
