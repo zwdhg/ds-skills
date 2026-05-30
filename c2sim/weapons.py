@@ -1,84 +1,118 @@
-"""Thunder 拦截武器模型(纯仿真)。
+"""Thunder 自主截击机与发射平台模型(纯仿真)。
 
-包含两类对象:
+* :class:`LaunchPad` —— 发射平台:存放/填装 Thunder,远程控制发射;受**作业
+  半径**约束(Thunder 只能在以平台为中心的作业半径内交战)。
+* :class:`Thunder` —— 已发射、自主飞行的截击机,经历三个阶段:
 
-* :class:`ThunderBattery` —— 固定布站的发射单元,持有有限的拦截弹库存、
-  作用距离与杀伤半径;
-* :class:`Interceptor` —— 已发射、朝预测拦截点定速飞行的拦截弹。
+  1. **起飞抵近(APPROACH)**:依指控上行航迹做指令制导,飞向预测拦截点;
+  2. **目标搜索(SEARCH)**:抵近后弹载 AI 启动,按截获概率搜索发现目标;
+  3. **末段拦截(TERMINAL)**:稳定锁定后以弹载图像 AI 高精度寻的,动能撞击。
 
-是否命中由引擎在拦截弹引爆时,依据其与目标**真值**位置之差和杀伤半径
-判定(见 :mod:`c2sim.engine`)。本模块只负责弹道推进与库存管理。
+阶段转换与制导由引擎驱动(见 :mod:`c2sim.engine`);本模块负责弹道推进、
+作业半径判定与库存管理。是否命中由引擎在引爆时依真值与杀伤半径判定。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import enum
+from dataclasses import dataclass, field
 
 from c2sim.geometry import Vec3
-from c2sim.models import next_id
+from c2sim.models import IdGenerator, next_id
+
+
+class Phase(enum.Enum):
+    APPROACH = "起飞抵近"
+    SEARCH = "目标搜索"
+    TERMINAL = "末段拦截"
 
 
 @dataclass
-class Interceptor:
-    """在飞拦截弹。"""
+class Thunder:
+    """在飞的 Thunder 截击机。"""
 
     interceptor_id: str
-    battery_id: str
+    pad_id: str
     target_track_id: str
+    origin: Vec3               # 发射平台位置(作业半径基准)
+    operating_radius: float    # 作业半径(米)
     position: Vec3
     velocity: Vec3
-    speed: float
+    max_speed: float
     lethal_radius: float
+    acquisition_range: float   # 弹载传感器截获距离(米)
+    acquisition_prob: float    # 进入截获距离后每帧锁定概率
+    seeker_sigma: float        # 末段图像寻的测量误差(米)
+    max_turn_rate: float       # 最大转弯率(弧度/秒),横向过载约束
+    lock_loss_prob: float      # 末段每帧丢锁(脱锁/被诱饵打断)概率
     intercept_point: Vec3
-    intercept_time: float  # 绝对仿真时间
+    intercept_time: float      # 绝对仿真时间(仅供制导/复盘参考)
     launch_time: float
-    terminal_range: float = 3_000.0  # 末制导导引头截获距离(米)
-    seeker_sigma: float = 10.0       # 末制导导引头测量误差(米)
+    desired_velocity: Vec3 = field(default_factory=Vec3)  # 制导指令速度(期望)
+    phase: Phase = Phase.APPROACH
+    acquired: bool = False
+    locked_target_id: str | None = None  # 末段锁定的真实目标(弹上导引头)
+    miss_distance: float = float("inf")   # 引爆时的真实脱靶量(米)
+    # 已锁定目标后投入攻击,作业半径留有余度(末段不因边界而放弃)。
+    terminal_range_margin: float = 1.5
     alive: bool = True
     detonated: bool = False
 
-    def steer_to(self, intercept_point: Vec3, intercept_time: float) -> None:
-        """中段制导:把速度矢量重新指向更新后的预测拦截点。"""
-        self.intercept_point = intercept_point
-        self.intercept_time = intercept_time
-        self.velocity = (intercept_point - self.position).unit() * self.speed
+    def steer_to(self, point: Vec3, intercept_time: float) -> None:
+        """下发制导**指令**:期望以最大速度指向拦截点。
 
-    def advance(self, dt: float, step_start: float) -> None:
-        """推进弹道。
-
-        ``step_start`` 为本仿真步起始时刻。若计划引爆时刻落在本步之内,
-        则只推进到引爆时刻并标记引爆——避免大步长导致的越界脱靶。
+        仅设定期望速度(``desired_velocity``);实际速度受转弯率约束,由
+        :meth:`c2sim.world.World.integrate_thunders` 在积分时逼近期望方向。
         """
-        if not self.alive or self.detonated:
-            return
-        t_remain = self.intercept_time - step_start
-        if t_remain <= dt:
-            self.position = self.position + self.velocity * max(t_remain, 0.0)
-            self.detonated = True
-        else:
-            self.position = self.position + self.velocity * dt
+        self.intercept_point = point
+        self.intercept_time = intercept_time
+        self.desired_velocity = (point - self.position).unit() * self.max_speed
+
+    def out_of_range(self) -> bool:
+        """是否已飞出作业半径(应自毁/返航,不再有效)。
+
+        未锁定时按作业半径约束;已锁定(末段攻击)时放宽至
+        ``operating_radius × terminal_range_margin``。
+        """
+        limit = self.operating_radius
+        if self.acquired:
+            limit *= self.terminal_range_margin
+        return self.origin.distance_to(self.position) > limit
 
 
 @dataclass
-class ThunderBattery:
-    """Thunder 发射单元。"""
+class HunterMax:
+    """Hunter Max —— 固定式无线电干扰设备(软杀伤)。
 
-    battery_id: str
+    对**辐射射频控制/导航信号**(即依赖 RF 链路)的无人机在干扰半径内实施
+    干扰,使其控制/导航链路中断;持续干扰 ``hold_time`` 秒后判定软杀伤
+    (迫降/返航)。对 RF 静默的自主目标(如 GPS 制导巡飞弹)无效。
+    """
+
+    jammer_id: str
     position: Vec3
-    inventory: int = 8                  # 拦截弹库存
-    interceptor_speed: float = 1000.0   # 拦截弹速度(米/秒)
-    max_range: float = 80_000.0         # 最大拦截作用距离(米)
-    min_range: float = 2_000.0          # 最小作用距离(过近不交战)
-    lethal_radius: float = 60.0         # 杀伤半径(米)
-    terminal_range: float = 3_000.0     # 拦截弹末制导截获距离(米)
-    seeker_sigma: float = 10.0          # 拦截弹导引头测量误差(米)
+    jam_range: float = 4_000.0   # 有效干扰半径(米)
+    hold_time: float = 5.0       # 持续干扰致软杀伤所需时长(秒)
 
-    def can_reach(self, point: Vec3) -> bool:
-        """预测拦截点是否落在本单元作用距离内且尚有库存。"""
-        if self.inventory <= 0:
-            return False
-        d = self.position.distance_to(point)
-        return self.min_range <= d <= self.max_range
+    def covers(self, point: Vec3) -> bool:
+        return self.position.distance_to(point) <= self.jam_range
+
+
+@dataclass
+class LaunchPad:
+    """Thunder 发射平台。"""
+
+    pad_id: str
+    position: Vec3
+    inventory: int = 4                 # 在架 Thunder 数量
+    operating_radius: float = 5_000.0  # 作业半径(米)
+    thunder_max_speed: float = 66.7    # ≈240 km/h
+    lethal_radius: float = 12.0        # 动能撞击/战斗部有效半径(米)
+    acquisition_range: float = 1_200.0
+    acquisition_prob: float = 0.7
+    seeker_sigma: float = 4.0          # 末段图像寻的测量误差(米)
+    max_turn_rate: float = 2.0         # 最大转弯率(弧度/秒),≈8g@67m/s
+    lock_loss_prob: float = 0.0        # 末段每帧丢锁概率(默认 0;研究可调)
 
     def fire(
         self,
@@ -86,26 +120,31 @@ class ThunderBattery:
         intercept_point: Vec3,
         intercept_time: float,
         now: float,
-    ) -> Interceptor:
-        """发射一发拦截弹至预测拦截点,库存减一。
-
-        调用方须先用 :meth:`can_reach` 校验;此处仅在库存耗尽时报错。
-        """
+        ids: IdGenerator | None = None,
+    ) -> Thunder:
+        """发射一架 Thunder 飞向预测拦截点,库存减一。"""
         if self.inventory <= 0:
-            raise RuntimeError(f"发射单元 {self.battery_id} 库存已空")
+            raise RuntimeError(f"发射平台 {self.pad_id} 已无在架 Thunder")
         self.inventory -= 1
-        direction = (intercept_point - self.position).unit()
-        return Interceptor(
-            interceptor_id=next_id("THDR"),
-            battery_id=self.battery_id,
+        velocity = (intercept_point - self.position).unit() * self.thunder_max_speed
+        mint = ids.next if ids is not None else next_id
+        return Thunder(
+            interceptor_id=mint("THDR"),
+            pad_id=self.pad_id,
             target_track_id=track_id,
+            origin=self.position,
+            operating_radius=self.operating_radius,
             position=self.position,
-            velocity=direction * self.interceptor_speed,
-            speed=self.interceptor_speed,
+            velocity=velocity,
+            max_speed=self.thunder_max_speed,
             lethal_radius=self.lethal_radius,
+            acquisition_range=self.acquisition_range,
+            acquisition_prob=self.acquisition_prob,
+            seeker_sigma=self.seeker_sigma,
+            max_turn_rate=self.max_turn_rate,
+            lock_loss_prob=self.lock_loss_prob,
             intercept_point=intercept_point,
             intercept_time=intercept_time,
             launch_time=now,
-            terminal_range=self.terminal_range,
-            seeker_sigma=self.seeker_sigma,
+            desired_velocity=velocity,
         )

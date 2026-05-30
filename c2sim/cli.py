@@ -1,50 +1,173 @@
 """命令行入口:运行演练想定并打印复盘报告。
 
-    python -m c2sim.cli            # 运行内置演示想定
-    python -m c2sim.cli --seed 7   # 指定随机种子
-    python -m c2sim.cli --events   # 同时打印逐条事件时间线
+    python -m c2sim.cli                       # 点状防护演示想定
+    python -m c2sim.cli --scenario border     # 边境带状防护
+    python -m c2sim.cli --events              # 打印逐条事件时间线
+    python -m c2sim.cli --plot out.svg        # 生成态势图
+    python -m c2sim.cli --scenario-file s.json   # 从 JSON 想定运行
+    python -m c2sim.cli --monte-carlo 50      # 蒙特卡洛 50 次,打印效能度量
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 
-from c2sim.engine import Engine, SimResult
-from c2sim.scenarios import build_demo_scenario
+from c2sim.engine import Engine, Scenario, SimResult
+from c2sim.geometry import Vec3
+
+_SCENARIOS = {
+    "point": "核心要域点状防护",
+    "border": "边境线带状防护",
+    "swarm": "蜂群突击(规模/饱和)",
+    "decoy": "亚视场诱饵(误关联压力)",
+}
 
 
-def _print_report(result: SimResult, show_events: bool) -> None:
-    print("=" * 60)
-    print("  演练指挥控制系统 · 仿真复盘")
-    print("=" * 60)
+def _named_builder(key: str):
+    from c2sim.scenarios import (
+        build_border_band_scenario,
+        build_decoy_scenario,
+        build_point_defense_scenario,
+        build_swarm_scenario,
+    )
+    return {
+        "point": build_point_defense_scenario,
+        "border": build_border_band_scenario,
+        "swarm": build_swarm_scenario,
+        "decoy": build_decoy_scenario,
+    }[key]
+
+
+def _file_builder(path: str):
+    """由 JSON 想定文件构造工厂:每次以指定种子重新解析,保证对象独立。"""
+    from c2sim.scenario_io import from_dict
+
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+
+    def build(seed: int) -> Scenario:
+        data = dict(raw)
+        data["seed"] = seed
+        return from_dict(data)
+
+    return build
+
+
+def _print_report(name: str, scenario: Scenario, result: SimResult, events: bool) -> None:
+    print("=" * 64)
+    print("  演练指挥控制系统 · Skyshield Nexus 仿真复盘")
+    print(f"  部署样式:{name}")
+    print("=" * 64)
+    from c2sim.sensors import union_coverage_km2
+    total_cov = union_coverage_km2(scenario.spotters)
+    print(
+        f"探测站 {len(scenario.spotters)} | 发射平台 {len(scenario.pads)} | "
+        f"雷达覆盖(并集)≈ {total_cov:.1f} km²"
+    )
     print(result.summary())
-    print("-" * 60)
+    print("-" * 64)
     if result.destroyed:
         print("已摧毁: " + ", ".join(result.destroyed))
+    if result.soft_killed:
+        print("软杀伤(干扰迫降/返航): " + ", ".join(result.soft_killed))
     if result.leaked:
         print("突防(未拦截): " + ", ".join(result.leaked))
+    if result.unresolved:
+        print("在途未决: " + ", ".join(result.unresolved))
     print(f"指令总数: {len(result.commands)}")
 
-    if show_events:
-        print("-" * 60)
+    if events:
+        print("-" * 64)
         print("事件时间线:")
         for ev in result.events:
             print(f"  [{ev.time:7.1f}s] {ev.kind:4s} | {ev.detail}")
-    print("=" * 60)
+    print("=" * 64)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="演练指挥控制系统仿真")
-    parser.add_argument("--seed", type=int, default=2026, help="随机种子")
+    parser = argparse.ArgumentParser(description="演练指挥控制系统仿真(反无人机)")
     parser.add_argument(
-        "--events", action="store_true", help="打印逐条事件时间线"
+        "--scenario", choices=sorted(_SCENARIOS), default="point", help="内置部署样式"
+    )
+    parser.add_argument("--scenario-file", metavar="PATH", help="从 JSON 想定文件运行")
+    parser.add_argument("--seed", type=int, default=2026, help="随机种子(批量起始)")
+    parser.add_argument("--events", action="store_true", help="打印逐条事件时间线")
+    parser.add_argument("--plot", metavar="PATH", help="生成态势 SVG 图并写入路径")
+    parser.add_argument(
+        "--monte-carlo", type=int, metavar="N", default=0,
+        help="蒙特卡洛运行 N 次(种子 seed..seed+N-1)并打印效能度量",
+    )
+    parser.add_argument(
+        "--sensitivity", type=int, metavar="N", default=0,
+        help="参数敏感性扫描(每点 N 次蒙特卡洛),打印各参数对突防率的摆幅",
+    )
+    parser.add_argument(
+        "--validate", metavar="CSV",
+        help="对外部真值轨迹 CSV(表头 t,target_id,x,y,z)做跟踪交叉验证",
     )
     args = parser.parse_args(argv)
 
-    scenario = build_demo_scenario(seed=args.seed)
+    if args.scenario_file:
+        builder = _file_builder(args.scenario_file)
+        name = f"自定义想定({args.scenario_file})"
+    else:
+        builder = _named_builder(args.scenario)
+        name = _SCENARIOS[args.scenario]
+
+    # 外部真值交叉验证模式。
+    if args.validate:
+        from c2sim.sensors import SpotterPro
+        from c2sim.tracking import CovarianceTracker
+        from c2sim.validation import Validator, load_truth_csv
+
+        truth = load_truth_csv(args.validate)
+        spotter = SpotterPro("VAL", Vec3(0, 0, 20))
+        val = Validator(spotter, lambda: CovarianceTracker(gate_distance=600.0))
+        err = val.run(truth)
+        print("=" * 64)
+        print(f"  外部真值交叉验证 · {args.validate}")
+        print("=" * 64)
+        print(err.summary())
+        print("=" * 64)
+        return 0
+
+    # 参数敏感性模式。
+    if args.sensitivity and args.sensitivity > 1:
+        from c2sim.sensitivity import default_sweep, format_sweep
+
+        seeds = range(args.seed, args.seed + args.sensitivity)
+        print("=" * 64)
+        print(f"  Skyshield Nexus · 参数敏感性 · 部署:{name}")
+        print("=" * 64)
+        print(format_sweep(default_sweep(builder, seeds)))
+        print("=" * 64)
+        return 0
+
+    # 蒙特卡洛模式。
+    if args.monte_carlo and args.monte_carlo > 1:
+        from c2sim.metrics import BatchMoe, run_batch
+
+        seeds = range(args.seed, args.seed + args.monte_carlo)
+        runs = run_batch(builder, seeds)
+        print("=" * 64)
+        print(f"  Skyshield Nexus · 效能度量(MOE) · 部署:{name}")
+        print("=" * 64)
+        print(BatchMoe.aggregate(runs).table())
+        print("=" * 64)
+        return 0
+
+    # 单次模式。
+    scenario = builder(seed=args.seed)
     engine = Engine(scenario)
     result = engine.run()
-    _print_report(result, show_events=args.events)
+    _print_report(name, scenario, result, events=args.events)
+
+    if args.plot:
+        from c2sim.viz import render_svg
+
+        render_svg(scenario, engine.trace, args.plot, title=f"态势图 · {name}")
+        print(f"态势图已写入: {args.plot}")
     return 0
 
 

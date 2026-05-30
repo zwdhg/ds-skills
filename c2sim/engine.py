@@ -1,14 +1,14 @@
-"""仿真引擎:把全链路按时间步推进。
+"""仿真引擎:Skyshield Nexus 指控闭环按时间步推进。
 
 每个仿真步(tick)依次执行:
 
-1. 推进来袭目标(真值)与在飞拦截弹;
-2. 处理拦截弹引爆,按其与目标真值位置之差与杀伤半径判定毁伤;
-3. 传感器对目标产生带噪量测;
-4. 航迹融合 → 威胁研判 → 拦截指令生成 → Thunder 发射;
-5. 检查目标是否突防(进入要地防护半径)及战斗结束条件。
+1. 推进来袭目标(真值,含末段加速寻的)与在飞 Thunder;
+2. 处理 Thunder 引爆,按其与目标真值位置之差与杀伤半径判定毁伤;
+3. 检查目标是否突防(进入"安全穹顶"防护半径);
+4. Spotter Pro 多模态探测 → 航迹融合 → 威胁研判 → 拦截指令生成 → 发射;
+5. Thunder 分阶段制导(起飞抵近 / 目标搜索 / 末段拦截)。
 
-引擎掌握"真值"(目标真实位置、毁伤判定),而指控链路只能看到航迹——
+引擎掌握"真值"(目标真实位置、毁伤判定),指控链路只能看到带噪航迹——
 这一信息隔离是整套仿真可信度的关键。
 """
 
@@ -18,28 +18,38 @@ import random
 from dataclasses import dataclass, field
 
 from c2sim.fusion import TrackFusion
-from c2sim.geometry import Vec3, lead_intercept_time
-from c2sim.interception import EngagementPolicy, plan_and_fire
-from c2sim.models import Command, Target
-from c2sim.sensors import Radar
-from c2sim.threat import ThreatPolicy, assess
-from c2sim.weapons import Interceptor, ThunderBattery
+from c2sim.geometry import Vec3
+from c2sim.guidance import LeadPursuitGuidance
+from c2sim.interception import EngagementPolicy, GreedyAssigner
+from c2sim.models import Command, CommandKind, IdGenerator, Target
+from c2sim.sensors import SpotterPro
+from c2sim.strategies import (
+    GuidanceLaw,
+    ThreatModel,
+    Tracker,
+    WeaponTargetAssigner,
+)
+from c2sim.threat import ThreatPolicy, WeightedThreatModel
+from c2sim.weapons import HunterMax, LaunchPad, Phase, Thunder
+from c2sim.world import World, seeker_lock
 
 
 @dataclass
 class Scenario:
     """一次演练想定。"""
 
-    asset: Vec3                       # 被掩护要地位置
+    asset: Vec3                       # 被掩护要地("安全穹顶"中心)
     targets: list[Target]
-    radars: list[Radar]
-    batteries: list[ThunderBattery]
+    spotters: list[SpotterPro]
+    pads: list[LaunchPad]
+    jammers: list[HunterMax] = field(default_factory=list)  # Hunter Max 干扰单元
     dt: float = 0.5                   # 仿真步长(秒)
     max_time: float = 600.0           # 最长仿真时长(秒)
     seed: int = 1234
     threat_policy: ThreatPolicy = field(default_factory=ThreatPolicy)
     engagement_policy: EngagementPolicy = field(default_factory=EngagementPolicy)
-    single_shot_pk: float = 0.85      # 单发杀伤概率(命中波门内时)
+    warhead_reliability: float = 0.95  # 引信/战斗部可靠性(脱靶=0 时的毁伤上限);
+    #                                    实现 Pk 由脱靶量经毁伤函数涌现,非硬设
 
 
 @dataclass
@@ -52,215 +62,341 @@ class Event:
 
 
 @dataclass
+class History:
+    """轻量航迹历史,供态势可视化。"""
+
+    target_paths: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
+    thunder_paths: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
+    # 事件标记:(x, y, kind),kind ∈ {摧毁, 软杀伤, 突防}
+    markers: list[tuple[float, float, str]] = field(default_factory=list)
+
+
+@dataclass
 class SimResult:
     """一次仿真的结果汇总。"""
 
-    destroyed: list[str] = field(default_factory=list)   # 被摧毁目标编号
-    leaked: list[str] = field(default_factory=list)      # 突防目标编号
-    unresolved: list[str] = field(default_factory=list)  # 仿真结束时仍在途的目标
+    destroyed: list[str] = field(default_factory=list)      # Thunder 硬杀伤
+    soft_killed: list[str] = field(default_factory=list)    # Hunter Max 软杀伤
+    leaked: list[str] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
     total_targets: int = 0
-    interceptors_fired: int = 0
+    thunders_launched: int = 0
     commands: list[Command] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
     duration: float = 0.0
 
     def summary(self) -> str:
+        soft = f" | 软杀伤 {len(self.soft_killed)}" if self.soft_killed else ""
         tail = f" | 在途未决 {len(self.unresolved)}" if self.unresolved else ""
         return (
             f"用时 {self.duration:.1f}s | 来袭目标 {self.total_targets} | "
-            f"摧毁 {len(self.destroyed)} | 突防 {len(self.leaked)}{tail} | "
-            f"发射 Thunder {self.interceptors_fired} 发"
+            f"摧毁 {len(self.destroyed)}{soft} | 突防 {len(self.leaked)}{tail} | "
+            f"发射 Thunder {self.thunders_launched} 架"
         )
 
 
-class Engine:
-    """指挥控制仿真引擎。"""
+@dataclass
+class Trace:
+    """仿真记录(结果 + 历史),供 CLI、可视化等消费。
 
-    def __init__(self, scenario: Scenario) -> None:
+    可视化/分析只需依赖本聚合的只读视图,无需依赖整个 :class:`Engine`(ISP)。
+    """
+
+    result: SimResult
+    history: History
+
+
+class Engine:
+    """Skyshield Nexus 指控仿真:编排"被控对象(World)"与"控制器(策略)"。
+
+    职责仅为**编排与控制**:按时间步驱动 World 物理、调用注入的传感/跟踪/
+    研判/分配/制导策略、维护交战与干扰台账、把 World 产出的结果事件翻译为
+    统计与历史。真值物理全部在 :class:`c2sim.world.World`。
+    """
+
+    def __init__(
+        self,
+        scenario: Scenario,
+        *,
+        tracker: Tracker | None = None,
+        threat_model: ThreatModel | None = None,
+        assigner: WeaponTargetAssigner | None = None,
+        guidance: GuidanceLaw | None = None,
+    ) -> None:
         self.s = scenario
         self.rng = random.Random(scenario.seed)
-        self.fusion = TrackFusion()
-        self.interceptors: list[Interceptor] = []
+        self.world = World(
+            targets=scenario.targets,
+            jammers=scenario.jammers,
+            asset=scenario.asset,
+            defended_radius=scenario.threat_policy.defended_radius,
+            warhead_reliability=scenario.warhead_reliability,
+            rng=self.rng,
+        )
+        self.ids = IdGenerator()  # 本引擎独立的 ID 生成器(避免全局可变状态)
+        # 可替换策略(依赖倒置):默认即现有实现,可在组装处注入其它算法。
+        self.tracker: Tracker = tracker or TrackFusion(
+            gate_distance=600.0, max_coast=6.0, ids=self.ids
+        )
+        self.threat_model: ThreatModel = threat_model or WeightedThreatModel(
+            scenario.threat_policy
+        )
+        self.assigner: WeaponTargetAssigner = assigner or GreedyAssigner(
+            scenario.engagement_policy
+        )
+        self.guidance: GuidanceLaw = guidance or LeadPursuitGuidance()
+
         self.engaged_counts: dict[str, int] = {}
+        self.jammed_tracks: dict[str, str] = {}  # track_id → 被干扰的真实目标 id
         self.now = 0.0
-        self.result = SimResult(total_targets=len(scenario.targets))
+        self.trace = Trace(
+            result=SimResult(total_targets=len(scenario.targets)),
+            history=History(),
+        )
+
+    # 便捷只读视图。
+    @property
+    def result(self) -> SimResult:
+        return self.trace.result
+
+    @property
+    def history(self) -> History:
+        return self.trace.history
 
     # -- 单步 -------------------------------------------------------------
 
     def step(self) -> None:
         s = self.s
         dt = s.dt
-        step_start = self.now
         self.now += dt
 
-        # 1) 推进真值与拦截弹(拦截弹按上一步设定的制导矢量飞行)。
-        for tgt in s.targets:
-            if tgt.alive:
-                tgt.advance(dt)
-        for itc in self.interceptors:
-            itc.advance(dt, step_start)
+        # 1) 末段制导(以步初真值解算瞄准,消耗导引头随机数)。
+        self._guide_terminal()
 
-        # 2) 处理引爆与毁伤。
-        self._resolve_detonations()
+        # 2) World 物理:先以**统一的步初参考系**推进弹道并近炸判定(拦截弹与
+        #    目标都从步初位置在 [0,dt] 内运动),再推进目标真值,最后结算。
+        self._apply(self.world.integrate_thunders(dt))
+        self.world.advance_targets(dt)
+        self._apply(self.world.resolve_jamming(dt))
+        self._apply(self.world.resolve_detonations())
+        self._apply(self.world.check_leaks())
+        self.world.reindex()  # 重建就近查询索引(供制导/干扰决策)
 
-        # 3) 突防判定。
-        self._check_leaks()
-
-        # 4) 传感器量测。
+        # 3) Spotter Pro 多模态探测 → 航迹融合。
         reports = []
-        for radar in s.radars:
-            reports.extend(radar.observe(s.targets, self.now, self.rng))
-
-        # 5) 航迹融合。
-        tracks = self.fusion.update(reports, self.now)
+        for spotter in s.spotters:
+            reports.extend(spotter.observe(self.world.targets, self.now, self.rng))
+        # 仅**已确认**航迹进入指控画面(研判/干扰/制导/分配);未确认(如杂波
+        # 激起的暂定航迹)不参与决策,避免污染态势与浪费拦截资源。
+        tracks = [t for t in self.tracker.update(reports, self.now) if t.confirmed]
         track_map = {t.track_id: t for t in tracks}
 
-        # 已消失的航迹释放其交战占用,允许对存活目标重新交战。
+        # 已消失的航迹释放其交战占用。
         for tid in list(self.engaged_counts):
             if tid not in track_map:
                 del self.engaged_counts[tid]
+        # 回收干扰占用:航迹消失,或目标实际已脱离被干扰状态(干扰被放弃)
+        # —— 后者使该航迹可重新交由 Thunder 硬杀伤,避免永久滞留 skip 集。
+        for tid, target_id in list(self.jammed_tracks.items()):
+            victim = self.world.target_by_id(target_id)
+            if tid not in track_map or victim is None or not victim.jammed:
+                del self.jammed_tracks[tid]
 
-        # 6) 威胁研判。
-        assessments = assess(tracks, s.asset, s.threat_policy)
+        # 4) 威胁研判。
+        assessments = self.threat_model.assess(tracks, s.asset)
 
-        # 7) 中段制导:用最新航迹重新解算在飞拦截弹的拦截诸元。
-        self._guide(track_map)
+        # 5) 软杀伤决策(RF 辐射目标优先干扰,节省 Thunder)。
+        skip = self._plan_jamming(assessments, track_map)
 
-        # 8) 拦截指令生成与发射。
-        commands, new_interceptors = plan_and_fire(
-            assessments,
-            track_map,
-            s.batteries,
-            s.engagement_policy,
-            self.now,
-            self.engaged_counts,
+        # 6) 目标搜索/锁定 + 起飞抵近段指令制导(消耗截获随机数)。
+        self._guide_search(track_map)
+
+        # 7) 拦截指令生成与发射(跳过已交由软杀伤处置的航迹)。
+        commands, new_thunders = self.assigner.plan(
+            assessments, track_map, s.pads, self.now, self.engaged_counts,
+            skip_tracks=skip, ids=self.ids,
         )
         for cmd in commands:
             self.result.commands.append(cmd)
-            if cmd.kind.value == "engage":
+            if cmd.kind == CommandKind.ENGAGE:
                 self._log("交战", cmd.note)
-        self.interceptors.extend(new_interceptors)
-        self.result.interceptors_fired += len(new_interceptors)
+        self.world.add_thunders(new_thunders)
+        self.result.thunders_launched += len(new_thunders)
 
-    # -- 子过程 -----------------------------------------------------------
+        # 8) 记录航迹历史(可视化)。
+        self._record_history()
 
-    def _resolve_detonations(self) -> None:
-        """对本步引爆的拦截弹判定毁伤,并清理弹体。"""
-        s = self.s
-        for itc in self.interceptors:
-            if not itc.detonated or not itc.alive:
-                continue
-            itc.alive = False
-            # 释放该航迹的一次交战占用。
-            if itc.target_track_id in self.engaged_counts:
-                self.engaged_counts[itc.target_track_id] = max(
-                    0, self.engaged_counts[itc.target_track_id] - 1
-                )
+    # -- 控制器:制导 ----------------------------------------------------
 
-            # 引爆点附近的存活目标即可能受毁伤(以真值判定)。
-            victim = self._nearest_alive_target(itc.position)
-            if victim is None:
-                self._log("脱靶", f"{itc.interceptor_id} 附近无目标")
-                continue
-            miss = itc.position.distance_to(victim.position)
-            if miss <= itc.lethal_radius and self.rng.random() <= s.single_shot_pk:
-                victim.alive = False
-                self.result.destroyed.append(victim.target_id)
-                self._log(
-                    "摧毁",
-                    f"{itc.interceptor_id} 摧毁 {victim.target_id} "
-                    f"(脱靶量 {miss:.0f}m)",
-                )
-            else:
-                self._log(
-                    "脱靶",
-                    f"{itc.interceptor_id} 未命中 {victim.target_id} "
-                    f"(脱靶量 {miss:.0f}m)",
-                )
+    def _guide_terminal(self) -> None:
+        """末段拦截:对已锁定 Thunder 以所锁真实目标寻的;支持丢锁/再捕获。
 
-        self.interceptors = [i for i in self.interceptors if i.alive]
-
-    def _guide(self, track_map: dict[str, "object"]) -> None:
-        """拦截弹制导。
-
-        分两段:**末段**——若进入导引头截获距离,弹上导引头直接锁定附近
-        真实目标(带导引头噪声)精确寻的;**中段**——否则依据指控链路上行
-        的最新航迹做指令制导。两段均无解或航迹丢失时,保持惯性飞行至既定
-        引爆时刻。
+        所锁目标若已被他弹击杀/消失,或发生丢锁(``lock_loss_prob``),则**丢锁**
+        回到搜索态——下一拍由 :meth:`_guide_search` 重新捕获 basket 内目标,
+        从而回收原本浪费的弹。
         """
-        from c2sim.models import Track  # 局部导入避免循环依赖噪声
+        for itc in self.world.thunders:
+            if itc.detonated or not itc.alive or not itc.acquired:
+                continue
+            victim = self.world.target_by_id(itc.locked_target_id)
+            lost = victim is None or not victim.alive
+            if not lost and itc.lock_loss_prob > 0.0:
+                lost = self.rng.random() < itc.lock_loss_prob
+            if lost:
+                itc.acquired = False
+                itc.locked_target_id = None
+                itc.phase = Phase.SEARCH
+                continue
+            seen = self.world.seeker_fix(victim, itc.seeker_sigma)
+            sol = self.guidance.aim(
+                itc.position, itc.max_speed, seen, victim.velocity
+            )
+            if sol is not None:
+                itc.steer_to(sol[0], self.now + sol[1])
 
-        for itc in self.interceptors:
+    def _guide_search(self, track_map: dict[str, object]) -> None:
+        """起飞抵近(指令制导)+ 目标搜索/锁定(硬绑定 + 误关联)。
+
+        锁定遵循"指控上行航迹为线索":在导引头视场(``acquisition_range``)内,
+        锁定**最接近所分配航迹估计位置**的真实目标。稀疏时即预定目标;密集/
+        诱饵态势下,邻近目标可能更接近线索而被锁错——误关联由几何自然涌现。
+        航迹丢失时退化为自主就近锁定。
+        """
+        from c2sim.models import Track
+
+        for itc in self.world.thunders:
             if itc.detonated or not itc.alive:
                 continue
-
-            # 末段寻的:导引头锁定基准内最近的真实目标。
-            victim = self._nearest_alive_target(itc.position)
-            if (
-                victim is not None
-                and itc.position.distance_to(victim.position) <= itc.terminal_range
-            ):
-                sigma = itc.seeker_sigma
-                seen = Vec3(
-                    victim.position.x + self.rng.gauss(0.0, sigma),
-                    victim.position.y + self.rng.gauss(0.0, sigma),
-                    victim.position.z + self.rng.gauss(0.0, sigma),
-                )
-                t = lead_intercept_time(itc.position, seen, victim.velocity, itc.speed)
-                if t is not None:
-                    itc.steer_to(seen + victim.velocity * t, self.now + t)
-                    continue
-
-            # 中段指令制导:跟随上行航迹。
             trk = track_map.get(itc.target_track_id)
-            if not isinstance(trk, Track):
+            trk = trk if isinstance(trk, Track) else None
+
+            if not itc.acquired:
+                basket = self.world.targets_within(
+                    itc.position, itc.acquisition_range
+                )
+                if basket:
+                    itc.phase = Phase.SEARCH
+                    if self.rng.random() <= itc.acquisition_prob:
+                        cue = trk.position if trk is not None else None
+                        victim = seeker_lock(
+                            basket, cue, itc.position, self.rng,
+                            itc.acquisition_range,
+                        )
+                        itc.acquired = True
+                        itc.locked_target_id = victim.target_id
+                        itc.phase = Phase.TERMINAL
+                        self._log("锁定",
+                                  f"{itc.interceptor_id} 末段锁定 {victim.target_id}")
+            if itc.acquired:
+                continue  # 末段由 _guide_terminal 接管
+            if trk is None:
                 continue
-            t = lead_intercept_time(
-                itc.position, trk.position, trk.velocity, itc.speed
+            sol = self.guidance.aim(
+                itc.position, itc.max_speed, trk.position, trk.velocity
             )
-            if t is None:
+            if sol is None:
                 continue
-            aim = trk.position + trk.velocity * t
-            itc.steer_to(aim, self.now + t)
+            itc.steer_to(sol[0], self.now + sol[1])
 
-    def _check_leaks(self) -> None:
-        """进入要地防护半径仍存活的目标判为突防。"""
+    # -- 控制器:软杀伤决策 ----------------------------------------------
+
+    def _plan_jamming(self, assessments, track_map: dict[str, object]) -> set[str]:
+        """对 RF 辐射、落入 Hunter Max 干扰圈的威胁航迹调度软杀伤。"""
         s = self.s
-        r = s.threat_policy.defended_radius
-        for tgt in s.targets:
-            if tgt.alive and tgt.position.distance_to(s.asset) <= r:
-                tgt.alive = False
-                self.result.leaked.append(tgt.target_id)
-                self._log("突防", f"{tgt.target_id} 突入要地防护圈")
-
-    def _nearest_alive_target(self, point: Vec3) -> Target | None:
-        best: Target | None = None
-        best_d = float("inf")
-        for tgt in self.s.targets:
-            if not tgt.alive:
+        skip: set[str] = set(self.jammed_tracks)
+        if not s.jammers or not s.engagement_policy.prefer_jamming:
+            return skip
+        for a in assessments:
+            if a.level < s.engagement_policy.engage_level:
                 continue
-            d = point.distance_to(tgt.position)
-            if d < best_d:
-                best_d = d
-                best = tgt
-        return best
+            if a.track_id in self.jammed_tracks:
+                continue
+            trk = track_map.get(a.track_id)
+            if trk is None or not getattr(trk, "rf_emitter", False):
+                continue
+            jammer = next((j for j in s.jammers if j.covers(trk.position)), None)
+            if jammer is None:
+                continue
+            victim = self.world.nearest_jammable(trk.position, jammer)
+            if victim is None:
+                continue
+            self.world.apply_jamming(victim)
+            self.jammed_tracks[a.track_id] = victim.target_id
+            skip.add(a.track_id)
+            self.result.commands.append(Command(
+                command_id=self.ids.next("CMD"),
+                kind=CommandKind.JAM,
+                timestamp=self.now,
+                track_id=a.track_id,
+                jammer_id=jammer.jammer_id,
+                note=f"{a.level.label}威胁(RF 辐射)→ {jammer.jammer_id} 实施干扰软杀伤",
+            ))
+            self._log("干扰", f"{jammer.jammer_id} 干扰 {victim.target_id}")
+        return skip
+
+    # -- 结果事件 → 统计/历史/台账 --------------------------------------
+
+    def _apply(self, events: list) -> None:
+        from c2sim.world import Kill, Leak, Miss, SelfDestruct, SoftKill
+
+        for ev in events:
+            if isinstance(ev, Kill):
+                self._release(ev.track_id)
+                self.result.destroyed.append(ev.target_id)
+                self.history.markers.append((
+                    self._pos(ev.target_id)))
+                self._log("摧毁",
+                          f"{ev.interceptor_id} 摧毁 {ev.target_id} "
+                          f"(脱靶量 {ev.miss:.1f}m)")
+            elif isinstance(ev, Miss):
+                self._release(ev.track_id)
+                if ev.target_id is None:
+                    self._log("脱靶", f"{ev.interceptor_id} 引爆时目标已失")
+                else:
+                    self._log("脱靶",
+                              f"{ev.interceptor_id} 未命中 {ev.target_id} "
+                              f"(脱靶量 {ev.miss:.1f}m)")
+            elif isinstance(ev, SelfDestruct):
+                self._release(ev.track_id)
+                self._log("自毁", f"{ev.interceptor_id} 飞出作业半径,任务终止")
+            elif isinstance(ev, SoftKill):
+                self.result.soft_killed.append(ev.target_id)
+                self.history.markers.append((ev.x, ev.y, "软杀伤"))
+                self._log("软杀伤", f"{ev.target_id} 链路中断,迫降/返航")
+            elif isinstance(ev, Leak):
+                self.result.leaked.append(ev.target_id)
+                self.history.markers.append((ev.x, ev.y, "突防"))
+                self._log("突防", f"{ev.target_id} 突入安全穹顶")
+
+    def _pos(self, target_id: str):
+        t = self.world.target_by_id(target_id)
+        return (t.position.x, t.position.y, "摧毁")
+
+    def _release(self, track_id: str) -> None:
+        if track_id in self.engaged_counts:
+            self.engaged_counts[track_id] = max(0, self.engaged_counts[track_id] - 1)
+
+    def _record_history(self) -> None:
+        for tgt in self.world.targets:
+            if tgt.alive:
+                self.history.target_paths.setdefault(tgt.target_id, []).append(
+                    (tgt.position.x, tgt.position.y))
+        for itc in self.world.thunders:
+            if itc.alive:
+                self.history.thunder_paths.setdefault(
+                    itc.interceptor_id, []).append((itc.position.x, itc.position.y))
 
     def _log(self, kind: str, detail: str) -> None:
         self.result.events.append(Event(self.now, kind, detail))
 
     # -- 主循环 -----------------------------------------------------------
 
-    def _active_targets(self) -> int:
-        return sum(1 for t in self.s.targets if t.alive)
-
     def run(self) -> SimResult:
         """运行至所有目标被处置或达到最长时长。"""
         while self.now < self.s.max_time:
             self.step()
-            if self._active_targets() == 0 and not self.interceptors:
+            if self.world.active_target_count() == 0 and not self.world.thunders:
                 break
         self.result.duration = self.now
-        self.result.unresolved = [
-            t.target_id for t in self.s.targets if t.alive
-        ]
+        self.result.unresolved = self.world.alive_target_ids()
         return self.result

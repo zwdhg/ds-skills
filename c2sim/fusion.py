@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from c2sim.geometry import Vec3
-from c2sim.models import SensorReport, Track, next_id
+from c2sim.models import IdGenerator, SensorReport, Track
 
 
 @dataclass
@@ -27,6 +27,9 @@ class _FusedMeasurement:
     position: Vec3
     sigma: float
     sensors: set[str]
+    modalities: set = field(default_factory=set)
+    classification: object | None = None
+    rf_emitter: bool = False
 
 
 def fuse_reports(
@@ -67,10 +70,17 @@ def _inverse_variance_fuse(reports: list[SensorReport]) -> _FusedMeasurement:
     fused_pos = acc / wsum
     # 融合后等效标准差:独立量测合成精度提升。
     fused_sigma = (1.0 / wsum) ** 0.5
+    # 光电识别结果(若有)并入融合量测。
+    classification = next(
+        (r.classification for r in reports if r.classification is not None), None
+    )
     return _FusedMeasurement(
         position=fused_pos,
         sigma=fused_sigma,
         sensors={r.sensor_id for r in reports},
+        modalities={r.modality for r in reports},
+        classification=classification,
+        rf_emitter=any(r.rf_emitter for r in reports),
     )
 
 
@@ -81,6 +91,7 @@ class TrackFusion:
         gate_distance: 量测-航迹关联波门(米)。
         alpha, beta: α-β 滤波增益,分别作用于位置与速度修正。
         max_coast: 惯性外推容忍时长(秒),超过则撤销航迹。
+        ids: 航迹 ID 生成器(引擎注入以保证按次复现);None 时用模块默认。
     """
 
     def __init__(
@@ -89,11 +100,17 @@ class TrackFusion:
         alpha: float = 0.6,
         beta: float = 0.2,
         max_coast: float = 8.0,
+        confirm_threshold: int = 1,
+        ids=None,
     ) -> None:
         self.gate_distance = gate_distance
         self.alpha = alpha
         self.beta = beta
         self.max_coast = max_coast
+        self.confirm_threshold = confirm_threshold
+        # 注入引擎的 IdGenerator 以与 CMD/THDR 同源;独立使用时自带私有生成器,
+        # 不触碰全局可变状态(TRK ID 仍按实例可复现)。
+        self._mint = (ids or IdGenerator()).next
         self.tracks: dict[str, Track] = {}
 
     def update(self, reports: list[SensorReport], now: float) -> list[Track]:
@@ -152,17 +169,28 @@ class TrackFusion:
         trk.last_update = now
         trk.coast_time = 0.0
         trk.hits += 1
+        if trk.hits >= self.confirm_threshold:
+            trk.confirmed = True  # 确认后latch,不再回退
         trk.contributing_sensors = set(m.sensors)
+        trk.modalities = set(m.modalities)
+        if m.classification is not None:
+            trk.classification = m.classification
+        if m.rf_emitter:
+            trk.rf_emitter = True
 
     def _spawn_track(self, m: _FusedMeasurement, now: float) -> None:
         """由一个无主量测起始新航迹(初始速度未知,置零)。"""
-        tid = next_id("TRK")
+        tid = self._mint("TRK")
         self.tracks[tid] = Track(
             track_id=tid,
             position=m.position,
             velocity=Vec3(),
             last_update=now,
             contributing_sensors=set(m.sensors),
+            modalities=set(m.modalities),
+            classification=m.classification,
+            rf_emitter=m.rf_emitter,
+            confirmed=self.confirm_threshold <= 1,
             hits=1,
             coast_time=0.0,
         )

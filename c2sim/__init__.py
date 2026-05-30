@@ -15,8 +15,10 @@
 from c2sim.geometry import Vec3
 from c2sim.models import (
     Command,
+    SensorModality,
     SensorReport,
     Target,
+    TargetKind,
     ThreatAssessment,
     ThreatLevel,
     Track,
@@ -25,8 +27,10 @@ from c2sim.models import (
 __all__ = [
     "Vec3",
     "SensorReport",
+    "SensorModality",
     "Track",
     "Target",
+    "TargetKind",
     "ThreatAssessment",
     "ThreatLevel",
     "Command",
