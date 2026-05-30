@@ -141,7 +141,7 @@ render_svg(engine, "situation.svg", title="态势图")
 | 接缝 | 协议 | 默认实现 |
 | --- | --- | --- |
 | 传感 | `SensorModel` | `SpotterPro` |
-| 跟踪 | `Tracker` | `TrackFusion` |
+| 跟踪 | `Tracker` | `TrackFusion`(标量α-β)/ `CovarianceTracker`(逐轴卡尔曼) |
 | 研判 | `ThreatModel` | `WeightedThreatModel` |
 | 制导 | `GuidanceLaw` | `LeadPursuitGuidance` / `PurePursuitGuidance` |
 | 火力分配 | `WeaponTargetAssigner` | `GreedyAssigner` |
@@ -189,6 +189,7 @@ c2sim/
   engine.py        Skyshield Nexus 控制器 + 编排(Engine / Trace)
   strategies.py    可替换算法协议(依赖倒置接缝)
   guidance.py      制导律实现(领先追踪 / 纯追踪)
+  tracking.py      协方差跟踪器(逐轴卡尔曼,各向异性误差感知)
   spatial.py       均匀网格空间索引(规模加速)
   metrics.py       效能度量(MOE)与蒙特卡洛聚合
   scenario_io.py   想定 JSON 读写与校验

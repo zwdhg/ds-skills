@@ -135,6 +135,27 @@ def turn_towards(current: Vec3, desired: Vec3, max_angle: float) -> Vec3:
     return new_dir * speed
 
 
+def los_diag_var(
+    sensor: Vec3, target: Vec3, sigma_range: float,
+    sigma_az_rad: float, sigma_el_rad: float,
+) -> Vec3:
+    """LOS 各向异性量测误差投影到世界轴的**对角方差**(var_x, var_y, var_z)。
+
+    在 LOS 基下,误差沿距离/方位/俯仰三轴的方差分别为 ``σr²``、``(r·σ_az)²``、
+    ``(r·σ_el)²``;将协方差 ``R = B·diag·Bᵀ`` 的对角投影到世界轴,得到各世界轴
+    的方差。俯仰误差大 → 高度(z)方差大,正是协方差跟踪器据以"少信高度"的
+    依据。忽略轴间相关项(对角近似),足以体现多模态融合收紧高度的工程价值。
+    """
+    e_r, e_az, e_el = los_basis(sensor, target)
+    r = sensor.distance_to(target)
+    vr, va, ve = sigma_range**2, (r * sigma_az_rad)**2, (r * sigma_el_rad)**2
+    return Vec3(
+        e_r.x**2 * vr + e_az.x**2 * va + e_el.x**2 * ve,
+        e_r.y**2 * vr + e_az.y**2 * va + e_el.y**2 * ve,
+        e_r.z**2 * vr + e_az.z**2 * va + e_el.z**2 * ve,
+    )
+
+
 def closest_point_of_approach(
     p1: Vec3, v1: Vec3, p2: Vec3, v2: Vec3
 ) -> tuple[float, float]:

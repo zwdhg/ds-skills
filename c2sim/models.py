@@ -127,6 +127,7 @@ class SensorReport:
     timestamp: float
     position: Vec3          # 量测位置(RF 模态为粗略定向折算点)
     position_sigma: float   # 等效一倍标准差(米),用于融合加权与波门
+    cov: Vec3 | None = None  # 各轴方差(var_x,var_y,var_z);供协方差跟踪器各向异性融合
     classification: TargetKind | None = None  # 光电识别结果
     rf_emitter: bool = False  # 该目标本帧被频谱测向截获(辐射 RF,可被干扰)
     truth_id: str | None = None

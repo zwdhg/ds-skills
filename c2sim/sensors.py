@@ -20,7 +20,7 @@ import math
 import random
 from dataclasses import dataclass, field
 
-from c2sim.geometry import Vec3, angular_measurement_noise, deg2rad
+from c2sim.geometry import Vec3, angular_measurement_noise, deg2rad, los_diag_var
 from c2sim.models import SensorModality, SensorReport, Target, TargetKind
 
 
@@ -173,6 +173,9 @@ class SpotterPro:
                     timestamp=now,
                     position=noisy,
                     position_sigma=sigma,
+                    cov=los_diag_var(self.position, t.position,
+                                     self.radar_sigma_range, self.radar_sigma_az,
+                                     self.radar_sigma_el),
                     rf_emitter=t.target_id in cued,
                     truth_id=t.target_id,
                 )
@@ -210,6 +213,9 @@ class SpotterPro:
                     timestamp=now,
                     position=noisy,
                     position_sigma=sigma,
+                    cov=los_diag_var(self.position, t.position,
+                                     self.eo_sigma_range, self.eo_sigma_ang,
+                                     self.eo_sigma_ang),
                     classification=self._classify(t, rng),
                     rf_emitter=t.target_id in cued,
                     truth_id=t.target_id,
