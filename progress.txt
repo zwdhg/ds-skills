@@ -1,0 +1,34 @@
+PROGRESS —— 短期记忆 / 滚动状态
+================================================
+(长期约定见 AGENTS.md;意图见 docs/prd.md;验收见 docs/user-stories.md)
+
+当前状态
+- 分支: claude/exercise-command-control-a7Qmu  →  PR #1
+- 测试: 120 项 unittest 全过,零第三方依赖
+- 质量门: python -m unittest discover -s tests   /   bash scripts/check.sh
+
+已完成(里程碑)
+[x] 对齐参考系统(C-UAS 规格):Spotter Pro / Skyshield Nexus / Thunder / 发射平台
+[x] 软硬结合杀伤:Hunter Max 干扰(软) + Thunder 动能(硬)
+[x] 态势可视化(无依赖 SVG)
+[x] SOLID 重构:P1 策略协议+依赖注入;P0 World/Engine/Trace 三分
+[x] 分析平台:P2 蒙特卡洛+MOE+想定即数据
+[x] 保真度:P3 转弯率约束/虚警杂波/模型卡
+[x] 规模:P4 空间索引+蜂群想定
+[x] 末段建模:硬绑定线索锁定+信杂比加权+丢锁再捕获;诱饵误关联量化
+[x] 协方差跟踪器(Tracker 第二实现):纯雷达远距高度误差 -23%
+[x] M-of-N 航迹确认:重杂波下确认航迹峰值 60→~5
+[x] 批判性复盘 + 7 角度代码评审:修 CPA 参考系/spatial.nearest/scenario_io/
+    metrics/TRK id/classify 等真 bug
+[x] 方法论整改:Pk 拆循环(由脱靶量经毁伤函数涌现,实测 ~78-83%);参数敏感性分析
+[x] 清债:覆盖并集(蜂群 235.6→156.1km²)/ ids 私有生成器 / 删 _eo_lock
+[x] 自迭代工作流固化:PRD + 用户故事 + AGENTS.md + progress.txt + check.sh
+
+待办 / 下一步(按价值)
+[ ] (最高价值)独立验证 oracle:接外部真值/高保真轨迹做交叉验证 —— 当前最大
+    短板,仓内无法自证。可先搭验证框架骨架(留数据接口),待有轨迹数据接入。
+[ ] (可选/按需,勿镀金)全协方差+马氏关联 / JPDA·MHT / IMM —— 接缝已留
+[ ] (残留)末段视场 basket 取自真值(无视场内信杂比/遮蔽);已在 model-card 标注
+
+变更日志(每轮 append:日期 | 改动 | 佐证)
+- 见 git log;关键行为变更均附蒙特卡洛对照(详见各提交信息)。
