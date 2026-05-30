@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from c2sim.geometry import Vec3
-from c2sim.models import SensorReport, Track, next_id
+from c2sim.models import IdGenerator, SensorReport, Track
 
 
 @dataclass
@@ -108,7 +108,9 @@ class TrackFusion:
         self.beta = beta
         self.max_coast = max_coast
         self.confirm_threshold = confirm_threshold
-        self._mint = ids.next if ids is not None else next_id
+        # 注入引擎的 IdGenerator 以与 CMD/THDR 同源;独立使用时自带私有生成器,
+        # 不触碰全局可变状态(TRK ID 仍按实例可复现)。
+        self._mint = (ids or IdGenerator()).next
         self.tracks: dict[str, Track] = {}
 
     def update(self, reports: list[SensorReport], now: float) -> list[Track]:

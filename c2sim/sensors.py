@@ -76,9 +76,8 @@ class SpotterPro:
     clutter_rate: float = 0.0           # 每帧期望虚警数(泊松);0 表示无杂波
     clutter_sigma: float = 80.0         # 虚警等效量测误差(米)
 
-    # 内部状态:当前雷达 TAS 跟踪与光电锁定的目标(以真值索引,代表硬件波束指向)
+    # 内部状态:当前雷达 TAS 跟踪的目标集合(以真值索引,代表硬件波束指向)。
     _tas: set[str] = field(default_factory=set)
-    _eo_lock: str | None = None
 
     # -- 几何判定 ---------------------------------------------------------
 
@@ -189,7 +188,6 @@ class SpotterPro:
         ]
         eo_candidates.sort(key=lambda t: self.position.distance_to(t.position))
         for t in eo_candidates[: self.eo_capacity]:
-            self._eo_lock = t.target_id
             noisy = angular_measurement_noise(
                 self.position,
                 t.position,
@@ -271,3 +269,38 @@ class SpotterPro:
         """
         r_km = self.coverage_radius / 1000.0
         return math.pi * r_km**2 * (self.azimuth_width_deg / 360.0)
+
+    def covers_point(self, x: float, y: float) -> bool:
+        """该站覆盖区是否包含水平点 ``(x, y)``(半径内 + 扇区内)。"""
+        dx, dy = x - self.position.x, y - self.position.y
+        if dx * dx + dy * dy > self.coverage_radius**2:
+            return False
+        if self.azimuth_width_deg >= 360.0:
+            return True
+        az = math.degrees(math.atan2(dy, dx))
+        diff = abs((az - self.azimuth_center_deg + 180.0) % 360.0 - 180.0)
+        return diff <= self.azimuth_width_deg / 2.0
+
+
+def union_coverage_km2(spotters, samples: int = 40000, seed: int = 0) -> float:
+    """多站覆盖区的**并集**面积(平方公里),蒙特卡洛估算。
+
+    各站面积直接相加会重复计入重叠区;此处在各站覆盖盘的包围盒内均匀采样,
+    统计被**任一**站覆盖的比例 × 盒面积,得到不含重叠的真实并集面积。
+    """
+    if not spotters:
+        return 0.0
+    import random
+    xs0 = min(s.position.x - s.coverage_radius for s in spotters)
+    xs1 = max(s.position.x + s.coverage_radius for s in spotters)
+    ys0 = min(s.position.y - s.coverage_radius for s in spotters)
+    ys1 = max(s.position.y + s.coverage_radius for s in spotters)
+    box = (xs1 - xs0) * (ys1 - ys0)
+    rng = random.Random(seed)
+    covered = 0
+    for _ in range(samples):
+        x = rng.uniform(xs0, xs1)
+        y = rng.uniform(ys0, ys1)
+        if any(s.covers_point(x, y) for s in spotters):
+            covered += 1
+    return box * covered / samples / 1e6  # m² → km²

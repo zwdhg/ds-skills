@@ -100,5 +100,23 @@ class TestCoverage(unittest.TestCase):
         self.assertAlmostEqual(s.coverage_area_km2(), 39.27, delta=0.1)
 
 
+class TestUnionCoverage(unittest.TestCase):
+    def test_single_station_matches_disc(self):
+        from c2sim.sensors import union_coverage_km2
+        s = _spotter()
+        self.assertAlmostEqual(union_coverage_km2([s]), s.coverage_area_km2(),
+                               delta=1.0)
+
+    def test_overlap_union_less_than_sum(self):
+        # 两个重叠站:并集应明显小于直接相加(扣除重叠),且大于单站。
+        from c2sim.sensors import union_coverage_km2
+        a = _spotter()
+        b = SpotterPro("B", Vec3(3000, 0, 20), rf_detect_prob=1.0,
+                       radar_detect_prob=1.0, eo_classify_prob=1.0)
+        union = union_coverage_km2([a, b])
+        self.assertLess(union, a.coverage_area_km2() + b.coverage_area_km2())
+        self.assertGreater(union, a.coverage_area_km2())
+
+
 if __name__ == "__main__":
     unittest.main()

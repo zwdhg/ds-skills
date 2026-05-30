@@ -90,8 +90,9 @@ class CovarianceTracker:
         self.process_var = process_var
         self.max_coast = max_coast
         self.confirm_threshold = confirm_threshold
-        from c2sim.models import next_id
-        self._mint = ids.next if ids is not None else next_id
+        from c2sim.models import IdGenerator
+        # 同 TrackFusion:独立使用时用私有生成器,不触碰全局可变状态。
+        self._mint = (ids or IdGenerator()).next
         self.tracks: dict[str, Track] = {}
         self._var: dict[str, Vec3] = {}  # 各航迹的各轴位置方差
 
