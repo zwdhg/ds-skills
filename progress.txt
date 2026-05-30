@@ -4,7 +4,7 @@ PROGRESS —— 短期记忆 / 滚动状态
 
 当前状态
 - 分支: claude/exercise-command-control-a7Qmu  →  PR #1
-- 测试: 120 项 unittest 全过,零第三方依赖
+- 测试: 125 项 unittest 全过,零第三方依赖
 - 质量门: python -m unittest discover -s tests   /   bash scripts/check.sh
 
 已完成(里程碑)
@@ -25,8 +25,10 @@ PROGRESS —— 短期记忆 / 滚动状态
 [x] 自迭代工作流固化:PRD + 用户故事 + AGENTS.md + progress.txt + check.sh
 
 待办 / 下一步(按价值)
-[ ] (最高价值)独立验证 oracle:接外部真值/高保真轨迹做交叉验证 —— 当前最大
-    短板,仓内无法自证。可先搭验证框架骨架(留数据接口),待有轨迹数据接入。
+[~] 独立验证 oracle:验证框架骨架已就位(validation.py:TruthTrack 契约 +
+    Validator 指标 + cli --validate CSV;tests/test_validation.py;示例
+    docs/examples/truth-track.csv)。**仍缺外部真实/高保真轨迹数据**——接入即可
+    产出独立结论;合成轨迹仅自检管线,非 oracle。这仍是最大短板,接口已备好。
 [ ] (可选/按需,勿镀金)全协方差+马氏关联 / JPDA·MHT / IMM —— 接缝已留
 [ ] (残留)末段视场 basket 取自真值(无视场内信杂比/遮蔽);已在 model-card 标注
 

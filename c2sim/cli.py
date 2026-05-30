@@ -14,6 +14,7 @@ import argparse
 import json
 
 from c2sim.engine import Engine, Scenario, SimResult
+from c2sim.geometry import Vec3
 
 _SCENARIOS = {
     "point": "核心要域点状防护",
@@ -101,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
         "--sensitivity", type=int, metavar="N", default=0,
         help="参数敏感性扫描(每点 N 次蒙特卡洛),打印各参数对突防率的摆幅",
     )
+    parser.add_argument(
+        "--validate", metavar="CSV",
+        help="对外部真值轨迹 CSV(表头 t,target_id,x,y,z)做跟踪交叉验证",
+    )
     args = parser.parse_args(argv)
 
     if args.scenario_file:
@@ -109,6 +114,23 @@ def main(argv: list[str] | None = None) -> int:
     else:
         builder = _named_builder(args.scenario)
         name = _SCENARIOS[args.scenario]
+
+    # 外部真值交叉验证模式。
+    if args.validate:
+        from c2sim.sensors import SpotterPro
+        from c2sim.tracking import CovarianceTracker
+        from c2sim.validation import Validator, load_truth_csv
+
+        truth = load_truth_csv(args.validate)
+        spotter = SpotterPro("VAL", Vec3(0, 0, 20))
+        val = Validator(spotter, lambda: CovarianceTracker(gate_distance=600.0))
+        err = val.run(truth)
+        print("=" * 64)
+        print(f"  外部真值交叉验证 · {args.validate}")
+        print("=" * 64)
+        print(err.summary())
+        print("=" * 64)
+        return 0
 
     # 参数敏感性模式。
     if args.sensitivity and args.sensitivity > 1:
